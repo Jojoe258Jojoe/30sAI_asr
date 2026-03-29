@@ -322,36 +322,47 @@ let currentPartialText = '';
 // DOM Elements
 const $ = id => document.getElementById(id);
 
-// WebSocket Connection for Streaming
-const WS_URL = `wss://tinyejoe7.modal.run/ws`;
+// Replace the WebSocket connection section in index.html
+const WS_URL = (() => {
+    // For local development
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        return 'ws://localhost:8765/ws';
+    }
+    // For Netlify production - UPDATE THIS WITH YOUR MODAL URL
+    return 'wss://tinyejoe7--whisper-endpoint.modal.run/ws';
+})();
+
+console.log('Connecting to WebSocket:', WS_URL);
 
 function connectWebSocket() {
-  try {
-    ws = new WebSocket(WS_URL);
-    
-    ws.onopen = () => {
-      console.log('WebSocket connected for transcription');
-      setCS('ok', 'Ready for speech');
-    };
-    
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.text) {
-        currentPartialText = data.text;
-        updateLiveTranscription(data.text);
-        updatePredictionChips(data.text);
+    try {
+        ws = new WebSocket(WS_URL);
         
-        if (!data.is_partial && data.text) {
-          // Final transcription - add to conversation
-          addMessage('customer', data.text, true);
-          // Generate AI response
-          setTimeout(() => {
-            const reply = generateAgentReply(data.text);
-            addMessage('agent', reply);
-          }, 500);
-        }
-      }
-    };
+        ws.onopen = () => {
+            console.log('WebSocket connected successfully');
+            setCS('ok', 'Ready for speech');
+            // Re-enable mic button if it was disabled
+            if ($('btn-mic')) $('btn-mic').disabled = false;
+        };
+        
+        ws.onclose = () => {
+            console.log('WebSocket disconnected, attempting to reconnect...');
+            setCS('', 'Reconnecting...');
+            // Try to reconnect after 3 seconds
+            setTimeout(connectWebSocket, 3000);
+        };
+        
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            setCS('', 'Connection error - check Modal backend');
+        };
+        
+        // Rest of your WebSocket handlers...
+    } catch (error) {
+        console.error('Failed to connect:', error);
+        setTimeout(connectWebSocket, 5000);
+    }
+}
     
     ws.onclose = () => {
       console.log('WebSocket disconnected');
