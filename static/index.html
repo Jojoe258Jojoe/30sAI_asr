@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="theme-color" content="#050608"/>
+<title>30sAI — Smart Call Center with Real-time Transcription</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<style>
+/* CSS styles from your original file - keeping all the beautiful styling */
+[data-theme="dark"]{--bg:#050608;--bg2:#0a0c12;--surface:#0f1118;--card:#141821;--border:#1e2330;--border2:#252c3d;--text:#e2e8f4;--text2:#8b93a8;--text3:#4a5168;--accent:#00e8a2;--accent-rgb:0,232,162;--purple:#a78bfa;--red:#ff3b5c;--amber:#f5a623;--cust-bg:#01221a;--cust-border:rgba(0,232,162,.2);--cust-text:#7dffd5;--agent-bg:#130f26;--agent-border:rgba(167,139,250,.2);--agent-text:#c4b5fd;--overlay:rgba(0,0,0,.7);}
+[data-theme="midnight"]{--bg:#020510;--bg2:#060c1e;--surface:#0a1128;--card:#0e1630;--border:#162040;--border2:#1e2c52;--text:#d4e4ff;--text2:#7090c0;--text3:#3a5080;--accent:#4d9fff;--accent-rgb:77,159,255;--purple:#c084fc;--red:#f87171;--amber:#fbbf24;--cust-bg:#061428;--cust-border:rgba(77,159,255,.25);--cust-text:#93c5fd;--agent-bg:#12082a;--agent-border:rgba(192,132,252,.2);--agent-text:#d8b4fe;--overlay:rgba(0,4,18,.75);}
+[data-theme="forest"]{--bg:#030a05;--bg2:#061008;--surface:#091610;--card:#0d1e14;--border:#152a1e;--border2:#1c3828;--text:#d4f0dc;--text2:#6a9e7a;--text3:#3a5e46;--accent:#34d399;--accent-rgb:52,211,153;--purple:#86efac;--red:#f87171;--amber:#fcd34d;--cust-bg:#041a0c;--cust-border:rgba(52,211,153,.25);--cust-text:#6ee7b7;--agent-bg:#0a1e10;--agent-border:rgba(134,239,172,.2);--agent-text:#a7f3d0;--overlay:rgba(3,10,5,.75);}
+[data-theme="warm"]{--bg:#0c0804;--bg2:#140e06;--surface:#1c1408;--card:#241a0c;--border:#342410;--border2:#443016;--text:#f5e8d0;--text2:#a08060;--text3:#604830;--accent:#f5a623;--accent-rgb:245,166,35;--purple:#fb923c;--red:#ef4444;--amber:#facc15;--cust-bg:#1a1004;--cust-border:rgba(245,166,35,.25);--cust-text:#fcd68a;--agent-bg:#1a0c04;--agent-border:rgba(251,146,60,.2);--agent-text:#fdba74;--overlay:rgba(12,8,4,.75);}
+[data-theme="light"]{--bg:#f0f2f8;--bg2:#e8eaf4;--surface:#ffffff;--card:#f8f9fd;--border:#e0e4f0;--border2:#d0d6e8;--text:#1a1d2e;--text2:#5a6080;--text3:#9aa0be;--accent:#0070f3;--accent-rgb:0,112,243;--purple:#7c3aed;--red:#ef4444;--amber:#f59e0b;--cust-bg:#dff6ee;--cust-border:rgba(0,112,243,.2);--cust-text:#0047aa;--agent-bg:#f0eaff;--agent-border:rgba(124,58,237,.2);--agent-text:#5b21b6;--overlay:rgba(30,35,60,.6);}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+:root{--safe-top:env(safe-area-inset-top,16px);--safe-bot:env(safe-area-inset-bottom,16px);}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;-webkit-font-smoothing:antialiased;transition:background .4s,color .3s;}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.5;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.03'/%3E%3C/svg%3E");}
+.screen{position:fixed;inset:0;display:flex;flex-direction:column;padding-top:var(--safe-top);padding-bottom:var(--safe-bot);background:var(--bg);transition:opacity .3s,transform .3s cubic-bezier(.4,0,.2,1);overflow:hidden;}
+.screen.hidden{opacity:0;pointer-events:none;transform:translateY(16px);}
+.nav-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 18px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;min-height:56px;}
+.nav-icon-btn{width:40px;height:40px;border-radius:50%;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text2);transition:background .15s,color .15s;}
+.nav-icon-btn:active{background:var(--border2);color:var(--text);}
+.nav-title{font-size:16px;font-weight:700;letter-spacing:-.3px;}
+.home-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px 0;}
+.home-brand{display:flex;align-items:center;gap:10px;}
+.brand-mark{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--accent) 0%,#00b8ff 100%);display:flex;align-items:center;justify-content:center;color:#000;}
+.brand-name{font-size:21px;font-weight:800;letter-spacing:-.5px;}
+.home-greeting{padding:24px 20px 0;}
+.home-greeting h1{font-size:28px;font-weight:800;line-height:1.15;letter-spacing:-.5px;}
+.home-greeting h1 span{background:linear-gradient(90deg,var(--accent),#00b8ff 90%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+.home-greeting p{margin-top:8px;font-size:13px;color:var(--text2);line-height:1.6;max-width:320px;}
+.section-label{padding:20px 20px 10px;font-size:10px;letter-spacing:3px;font-weight:700;color:var(--text3);text-transform:uppercase;font-family:'JetBrains Mono',monospace;}
+.provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 16px 24px;}
+.provider-card{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:18px 16px 16px;cursor:pointer;transition:transform .18s;position:relative;}
+.provider-card:active{transform:scale(.96);}
+.p-logo-wrap{width:52px;height:52px;border-radius:14px;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;margin-bottom:14px;}
+.p-logo-fallback{font-size:18px;font-weight:800;}
+.p-name{font-size:16px;font-weight:700;margin-bottom:3px;}
+.p-tag{font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;}
+.p-chevron{position:absolute;right:13px;bottom:14px;width:26px;height:26px;border-radius:50%;background:var(--border2);display:flex;align-items:center;justify-content:center;}
+.service-hero{display:flex;align-items:center;gap:14px;padding:20px 20px 14px;}
+.service-hero-logo{width:62px;height:62px;border-radius:18px;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;}
+.service-hero-info h2{font-size:22px;font-weight:800;letter-spacing:-.4px;}
+.service-hero-info p{font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;}
+.service-scroll{flex:1;overflow-y:auto;padding:4px 16px 16px;display:flex;flex-direction:column;gap:9px;}
+.service-item{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:15px 14px;cursor:pointer;transition:transform .15s;}
+.service-item:active{transform:scale(.98);}
+.svc-icon-wrap{width:46px;height:46px;border-radius:13px;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;}
+.svc-name{font-size:15px;font-weight:600;}
+.svc-sub{font-size:11px;color:var(--text3);margin-top:2px;}
+.call-bg{position:absolute;inset:0;z-index:0;transition:background .6s;}
+.call-bg::after{content:'';position:absolute;inset:0;background:linear-gradient(180deg,rgba(5,6,8,.15) 0%,rgba(5,6,8,.82) 52%,var(--bg) 100%);}
+.call-content{position:relative;z-index:2;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:calc(var(--safe-top) + 20px) 20px 0;}
+.call-avatar{width:98px;height:98px;border-radius:28px;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;margin-bottom:22px;}
+.call-avatar-fallback{font-size:48px;}
+.call-pname{font-size:27px;font-weight:800;letter-spacing:-.5px;color:white;text-shadow:0 2px 20px rgba(0,0,0,.5);}
+.call-sname{margin-top:5px;font-size:12px;color:rgba(255,255,255,.5);font-family:'JetBrains Mono',monospace;}
+.call-pill{margin-top:20px;display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);padding:8px 16px;border-radius:30px;}
+.call-dot-live{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent);animation:blink-live 1.4s ease-in-out infinite;}
+@keyframes blink-live{0%,100%{opacity:1;}50%{opacity:.3;}}
+.call-timer-txt{font-size:12px;color:rgba(255,255,255,.65);font-family:'JetBrains Mono',monospace;}
+.call-controls{position:relative;z-index:2;padding:0 28px calc(var(--safe-bot) + 18px);width:100%;}
+.ctrl-row{display:flex;align-items:center;justify-content:space-around;margin-bottom:28px;}
+.ctrl-btn{display:flex;flex-direction:column;align-items:center;gap:7px;background:none;border:none;cursor:pointer;}
+.ctrl-circle{width:60px;height:60px;border-radius:50%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;color:white;transition:transform .15s;}
+.ctrl-btn:active .ctrl-circle{transform:scale(.91);}
+.ctrl-lbl{font-size:10px;color:rgba(255,255,255,.35);font-family:'JetBrains Mono',monospace;}
+.end-btn{width:70px;height:70px;border-radius:50%;background:var(--red);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;color:white;box-shadow:0 6px 30px rgba(255,59,92,.45);transition:transform .15s;}
+.end-btn:active{transform:scale(.91);}
+.cstatus-bar{position:absolute;top:calc(var(--safe-top) + 6px);left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);padding:5px 13px;border-radius:30px;z-index:5;}
+.csdot{width:5px;height:5px;border-radius:50%;background:var(--text3);}
+.csdot.ok{background:var(--accent);}
+.cstxt{font-size:10px;color:rgba(255,255,255,.4);font-family:'JetBrains Mono',monospace;}
+.tp{position:fixed;inset:0;z-index:30;display:flex;flex-direction:column;padding-top:var(--safe-top);padding-bottom:var(--safe-bot);background:var(--bg2);transform:translateX(100%);transition:transform .32s cubic-bezier(.4,0,.2,1);}
+.tp.open{transform:translateX(0);}
+.drag-handle{position:absolute;left:0;top:0;bottom:0;width:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.drag-handle::after{content:'';width:4px;height:44px;border-radius:2px;background:rgba(255,255,255,.08);}
+.tp-header{display:flex;align-items:center;justify-content:space-between;padding:12px 18px 12px 30px;background:var(--surface);border-bottom:1px solid var(--border);}
+.live-badge{display:flex;align-items:center;gap:5px;background:rgba(var(--accent-rgb),.1);border:1px solid rgba(var(--accent-rgb),.25);padding:4px 10px;border-radius:20px;}
+.live-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);animation:blink-live 1.4s infinite;}
+.live-lbl{font-size:9px;font-weight:700;letter-spacing:2px;color:var(--accent);}
+.live-card{margin:10px 14px 6px;background:var(--card);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:13px;padding:11px 13px;min-height:52px;}
+.live-card.speaking{border-left-color:var(--red);background:rgba(255,59,92,.04);}
+.live-card-label{font-size:8px;letter-spacing:3px;color:var(--text3);margin-bottom:5px;}
+.live-card-text{font-size:15px;font-weight:600;color:var(--accent);line-height:1.4;}
+.conv-scroll{flex:1;overflow-y:auto;padding:8px 14px 10px;display:flex;flex-direction:column;gap:10px;}
+.brow{display:flex;flex-direction:column;animation:bub-in .22s;}
+@keyframes bub-in{from{opacity:0;transform:translateY(7px);}to{opacity:1;transform:translateY(0);}}
+.brow.you{align-items:flex-end;}
+.brow.agent{align-items:flex-start;}
+.bmeta{font-size:8px;color:var(--text3);margin-bottom:4px;padding:0 4px;}
+.bubble{max-width:84%;padding:11px 14px;border-radius:16px;line-height:1.55;font-size:14px;word-break:break-word;}
+.bubble.you{background:var(--cust-bg);border:1px solid var(--cust-border);border-bottom-right-radius:4px;color:var(--cust-text);}
+.bubble.agent{background:var(--agent-bg);border:1px solid var(--agent-border);border-bottom-left-radius:4px;color:var(--agent-text);}
+.bubble[contenteditable="true"]{outline:none;}
+.bubble[contenteditable="true"]:focus{box-shadow:0 0 0 2px rgba(var(--accent-rgb),.15);}
+.edit-tag{display:inline-block;padding:2px 7px;border-radius:4px;background:rgba(var(--accent-rgb),.1);font-size:8px;letter-spacing:1.5px;color:var(--accent);margin-left:6px;cursor:pointer;}
+.pred-area{border-top:1px solid var(--border);padding:10px 14px 6px;background:rgba(0,0,0,.15);}
+.pred-label{font-size:8px;letter-spacing:2.5px;color:var(--text3);margin-bottom:7px;}
+.pred-chips{display:flex;gap:7px;overflow-x:auto;padding-bottom:2px;}
+.pred-chips::-webkit-scrollbar{display:none;}
+.pred-chip{flex-shrink:0;background:rgba(var(--accent-rgb),.06);border:1px solid rgba(var(--accent-rgb),.2);padding:7px 13px;border-radius:30px;font-size:12px;color:var(--purple);cursor:pointer;white-space:nowrap;}
+.pred-chip:active{background:rgba(var(--accent-rgb),.16);}
+.quick-row{display:flex;gap:8px;padding:4px 14px 6px;overflow-x:auto;}
+.qchip{flex-shrink:0;background:var(--card);border:1px solid var(--border);padding:7px 13px;border-radius:30px;font-size:12px;color:var(--text2);cursor:pointer;}
+.input-bar{display:flex;gap:9px;padding:8px 14px 10px;background:var(--surface);border-top:1px solid var(--border);}
+.text-input{flex:1;background:var(--card);border:1px solid var(--border);border-radius:13px;padding:10px 13px;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;font-size:14px;resize:none;outline:none;min-height:42px;max-height:110px;}
+.text-input:focus{border-color:var(--accent);}
+.send-btn{width:42px;height:42px;border-radius:12px;background:var(--accent);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#000;}
+.settings-panel{position:fixed;inset:0;z-index:40;display:flex;flex-direction:column;padding-top:var(--safe-top);padding-bottom:var(--safe-bot);background:var(--bg);transform:translateY(100%);transition:transform .36s;}
+.settings-panel.open{transform:translateY(0);}
+.settings-scroll{flex:1;overflow-y:auto;padding:0 0 20px;}
+.settings-section{padding:0 16px;margin-top:8px;}
+.settings-section-title{font-size:10px;letter-spacing:3px;font-weight:700;color:var(--text3);padding:16px 4px 10px;}
+.profile-card{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin-bottom:12px;}
+.profile-avatar{width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--accent) 0%,#00b8ff 100%);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800;color:#000;}
+.profile-info{flex:1;}
+.profile-name-input,.profile-phone-input{width:100%;background:transparent;border:none;outline:none;color:var(--text);font-family:'Plus Jakarta Sans',sans-serif;}
+.profile-name-input{font-size:17px;font-weight:700;margin-bottom:3px;}
+.profile-phone-input{font-size:12px;color:var(--text2);font-family:'JetBrains Mono',monospace;}
+.theme-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;padding:4px 2px 6px;}
+.theme-swatch{display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer;}
+.swatch-circle{width:44px;height:44px;border-radius:50%;border:2px solid transparent;position:relative;}
+.theme-swatch.active .swatch-circle{border-color:var(--accent);}
+.swatch-circle::before{content:'';position:absolute;inset:0;border-radius:50%;}
+.sw-dark .swatch-circle::before{background:linear-gradient(135deg,#050608 50%,#00e8a2 50%);}
+.sw-midnight .swatch-circle::before{background:linear-gradient(135deg,#020510 50%,#4d9fff 50%);}
+.sw-forest .swatch-circle::before{background:linear-gradient(135deg,#030a05 50%,#34d399 50%);}
+.sw-warm .swatch-circle::before{background:linear-gradient(135deg,#0c0804 50%,#f5a623 50%);}
+.sw-light .swatch-circle::before{background:linear-gradient(135deg,#f0f2f8 50%,#0070f3 50%);}
+.check-overlay{display:none;position:absolute;inset:0;align-items:center;justify-content:center;background:rgba(0,0,0,.35);border-radius:50%;}
+.theme-swatch.active .check-overlay{display:flex;}
+.swatch-lbl{font-size:10px;color:var(--text3);}
+.overlay{position:fixed;inset:0;z-index:39;background:var(--overlay);opacity:0;pointer-events:none;transition:opacity .3s;}
+.overlay.show{opacity:1;pointer-events:all;}
+.ripple{position:relative;overflow:hidden;}
+.ripple-fx{position:absolute;border-radius:50%;background:rgba(255,255,255,.1);animation:rip .5s ease-out forwards;pointer-events:none;}
+@keyframes rip{from{transform:scale(0);opacity:1;}to{transform:scale(3.5);opacity:0;}}
+::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border2);}
+</style>
+</head>
+<body>
+
+<!-- HOME SCREEN -->
+<div class="screen" id="screen-home">
+  <div class="home-header">
+    <div class="home-brand">
+      <div class="brand-mark"><i data-lucide="radio" style="width:18px;height:18px;"></i></div>
+      <div class="brand-name">30sAI</div>
+    </div>
+    <button class="nav-icon-btn" id="btn-settings"><i data-lucide="settings-2" style="width:18px;height:18px;"></i></button>
+  </div>
+  <div class="home-greeting">
+    <h1>Smart Call<br><span>Center Assistant</span></h1>
+    <p>Real-time transcription & AI-powered responses for accessible communication.</p>
+  </div>
+  <div class="section-label">SELECT SERVICE</div>
+  <div class="provider-grid" id="provider-grid"></div>
+</div>
+
+<!-- SERVICE SCREEN -->
+<div class="screen hidden" id="screen-service">
+  <div class="nav-bar">
+    <button class="nav-icon-btn" id="btn-back-home"><i data-lucide="arrow-left" style="width:18px;height:18px;"></i></button>
+    <div class="nav-title" id="service-nav-title">Services</div>
+    <div style="width:40px"></div>
+  </div>
+  <div class="service-hero">
+    <div class="service-hero-logo" id="service-hero-logo">
+      <div class="service-hero-fallback" id="service-hero-fallback" style="font-size:32px;">📞</div>
+    </div>
+    <div class="service-hero-info">
+      <h2 id="service-hero-name">Provider</h2>
+      <p id="service-hero-tag">—</p>
+    </div>
+  </div>
+  <div class="service-scroll" id="service-scroll"></div>
+</div>
+
+<!-- CALL SCREEN -->
+<div class="screen hidden" id="screen-call">
+  <div class="call-bg" id="call-bg"></div>
+  <div class="cstatus-bar"><div class="csdot" id="csdot"></div><span class="cstxt" id="cstxt">Initialising...</span></div>
+  <div class="call-content">
+    <div class="call-avatar">
+      <div class="call-avatar-fallback" id="call-avatar-fallback">📞</div>
+    </div>
+    <div class="call-pname" id="call-pname">Provider</div>
+    <div class="call-sname" id="call-sname">Service</div>
+    <div class="call-pill"><div class="call-dot-live"></div><span class="call-timer-txt" id="call-timer-txt">Connecting...</span></div>
+  </div>
+  <div class="call-controls">
+    <div class="ctrl-row">
+      <button class="ctrl-btn" id="btn-mic">
+        <div class="ctrl-circle" id="mic-circle"><i data-lucide="mic" style="width:22px;height:22px;"></i></div>
+        <span class="ctrl-lbl">MIC</span>
+      </button>
+      <button class="ctrl-btn" id="btn-open-tp">
+        <div class="ctrl-circle"><i data-lucide="file-text" style="width:22px;height:22px;"></i></div>
+        <span class="ctrl-lbl">TRANSCRIPT</span>
+      </button>
+    </div>
+    <div class="end-row"><button class="end-btn" id="btn-end"><i data-lucide="phone-off" style="width:26px;height:26px;"></i></button></div>
+  </div>
+</div>
+
+<!-- TRANSCRIPT PANEL -->
+<div class="tp" id="tp">
+  <div class="drag-handle" id="tp-drag"></div>
+  <div class="tp-header">
+    <div class="tp-header-left">
+      <div class="live-badge"><div class="live-dot"></div><span class="live-lbl">LIVE</span></div>
+      <div class="tp-title">Transcript & Predictions</div>
+    </div>
+    <button class="nav-icon-btn" id="tp-close" style="width:36px;height:36px;"><i data-lucide="x" style="width:16px;height:16px;"></i></button>
+  </div>
+  <div class="live-card" id="live-card">
+    <div class="live-card-label">CURRENT TRANSCRIPTION</div>
+    <div class="live-card-text dim" id="live-card-txt">Tap mic to start speaking...</div>
+  </div>
+  <div class="conv-scroll" id="conv-scroll">
+    <div class="conv-empty" id="conv-empty">
+      <div class="conv-empty-icon"><i data-lucide="mic" style="width:36px;height:36px;"></i></div>
+      <div class="conv-empty-txt">Your conversation appears here<br>as you speak</div>
+    </div>
+  </div>
+  <div class="pred-area">
+    <div class="pred-label">NEXT WORD PREDICTIONS</div>
+    <div class="pred-chips" id="pred-chips"></div>
+  </div>
+  <div class="quick-row" id="quick-row">
+    <div class="qchip" data-txt="I need help with my account">Account Help</div>
+    <div class="qchip" data-txt="Please reset my PIN">Reset PIN</div>
+    <div class="qchip" data-txt="Check my balance">Balance</div>
+    <div class="qchip" data-txt="Speak to an agent">Human Agent</div>
+    <div class="qchip" data-txt="Repeat that please">Repeat</div>
+  </div>
+  <div class="input-bar">
+    <textarea class="text-input" id="text-input" placeholder="Type or edit transcript..." rows="1"></textarea>
+    <button class="send-btn" id="send-btn"><i data-lucide="send" style="width:17px;height:17px;"></i></button>
+  </div>
+</div>
+
+<!-- SETTINGS PANEL -->
+<div class="overlay" id="overlay"></div>
+<div class="settings-panel" id="settings-panel">
+  <div class="nav-bar">
+    <button class="nav-icon-btn" id="settings-close"><i data-lucide="x" style="width:18px;height:18px;"></i></button>
+    <div class="nav-title">Settings</div>
+    <div style="width:40px"></div>
+  </div>
+  <div class="settings-scroll">
+    <div class="settings-section">
+      <div class="settings-section-title">My Profile</div>
+      <div class="profile-card">
+        <div class="profile-avatar" id="profile-avatar-circle">?</div>
+        <div class="profile-info">
+          <input class="profile-name-input" id="profile-name" type="text" placeholder="Your name" autocomplete="off"/>
+          <input class="profile-phone-input" id="profile-phone" type="tel" placeholder="+256 XXX XXX XXX" autocomplete="off"/>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Appearance</div>
+      <div class="theme-grid" id="theme-grid">
+        <div class="theme-swatch sw-dark active" data-theme="dark"><div class="swatch-circle"><div class="check-overlay"><i data-lucide="check" style="width:14px;height:14px;color:white;"></i></div></div><span class="swatch-lbl">Dark</span></div>
+        <div class="theme-swatch sw-midnight" data-theme="midnight"><div class="swatch-circle"><div class="check-overlay"><i data-lucide="check" style="width:14px;height:14px;color:white;"></i></div></div><span class="swatch-lbl">Midnight</span></div>
+        <div class="theme-swatch sw-forest" data-theme="forest"><div class="swatch-circle"><div class="check-overlay"><i data-lucide="check" style="width:14px;height:14px;color:white;"></i></div></div><span class="swatch-lbl">Forest</span></div>
+        <div class="theme-swatch sw-warm" data-theme="warm"><div class="swatch-circle"><div class="check-overlay"><i data-lucide="check" style="width:14px;height:14px;color:white;"></i></div></div><span class="swatch-lbl">Warm</span></div>
+        <div class="theme-swatch sw-light" data-theme="light"><div class="swatch-circle"><div class="check-overlay"><i data-lucide="check" style="width:14px;height:14px;color:white;"></i></div></div><span class="swatch-lbl">Light</span></div>
+      </div>
+    </div>
+    <div class="version-badge" style="text-align:center;padding:20px 0 8px;font-size:10px;color:var(--text3);">30sAI v2.0 · Real-time Transcription</div>
+  </div>
+</div>
+
+<script>
+// Service Provider Data
+const providers = [
+  { id: 'airtel', name: 'Airtel Uganda', short: 'Airtel', icon: '📱', tag: 'Telecom Support', bg: 'radial-gradient(ellipse at 40% 20%,#3a0810,#0c0204 70%)',
+    services: [
+      { id: 'data', icon: 'wifi', name: 'Data Bundles', sub: 'Purchase data plans' },
+      { id: 'balance', icon: 'wallet', name: 'Balance Check', sub: 'View airtime & data' },
+      { id: 'support', icon: 'headphones', name: 'Technical Support', sub: 'Network assistance' }
+    ] },
+  { id: 'mtn', name: 'MTN Uganda', short: 'MTN', icon: '📶', tag: 'Mobile Money & Data', bg: 'radial-gradient(ellipse at 40% 20%,#2a1e00,#0a0800 70%)',
+    services: [
+      { id: 'data', icon: 'wifi', name: 'Data Bundles', sub: 'Purchase data packages' },
+      { id: 'momopay', icon: 'smartphone', name: 'MoMo Pay', sub: 'Mobile money services' },
+      { id: 'support', icon: 'headphones', name: 'Customer Care', sub: 'General inquiries' }
+    ] },
+  { id: 'stanbic', name: 'Stanbic Bank', short: 'Stanbic', icon: '🏦', tag: 'Banking Services', bg: 'radial-gradient(ellipse at 40% 20%,#001828,#010508 70%)',
+    services: [
+      { id: 'balance', icon: 'landmark', name: 'Account Balance', sub: 'Check balance' },
+      { id: 'transfer', icon: 'arrow-right-left', name: 'Money Transfer', sub: 'Send funds' },
+      { id: 'support', icon: 'headphones', name: 'Banking Support', sub: 'Account issues' }
+    ] }
+];
+
+// Global State
+let selectedProvider = null;
+let selectedService = null;
+let callActive = false;
+let callStartTime = null;
+let callTimer = null;
+let conversation = [];
+let mediaRecorder = null;
+let audioChunks = [];
+let ws = null;
+let isRecording = false;
+let audioContext = null;
+let processor = null;
+let stream = null;
+let currentPartialText = '';
+
+// DOM Elements
+const $ = id => document.getElementById(id);
+
+// WebSocket Connection for Streaming
+const WS_URL = `ws://${window.location.hostname}:8765/ws`;
+
+function connectWebSocket() {
+  try {
+    ws = new WebSocket(WS_URL);
+    
+    ws.onopen = () => {
+      console.log('WebSocket connected for transcription');
+      setCS('ok', 'Ready for speech');
+    };
+    
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.text) {
+        currentPartialText = data.text;
+        updateLiveTranscription(data.text);
+        updatePredictionChips(data.text);
+        
+        if (!data.is_partial && data.text) {
+          // Final transcription - add to conversation
+          addMessage('customer', data.text, true);
+          // Generate AI response
+          setTimeout(() => {
+            const reply = generateAgentReply(data.text);
+            addMessage('agent', reply);
+          }, 500);
+        }
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
+      setCS('', 'Disconnected');
+    };
+    
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setCS('', 'Connection error');
+    };
+  } catch (error) {
+    console.error('Failed to connect WebSocket:', error);
+  }
+}
+
+function updateLiveTranscription(text) {
+  const liveCard = $('live-card-txt');
+  if (liveCard) {
+    liveCard.textContent = text || 'Listening...';
+    liveCard.classList.remove('dim');
+    $('live-card').classList.add('speaking');
+    setTimeout(() => $('live-card').classList.remove('speaking'), 2000);
+  }
+}
+
+function updatePredictionChips(text) {
+  // Generate word predictions based on partial text
+  const words = text.split(' ');
+  const lastWord = words[words.length - 1] || '';
+  
+  const predictions = getWordPredictions(lastWord);
+  const chipsContainer = $('pred-chips');
+  chipsContainer.innerHTML = predictions.map(p => `<span class="pred-chip">${escapeHtml(p)}</span>`).join('');
+  
+  chipsContainer.querySelectorAll('.pred-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const input = $('text-input');
+      input.value = (input.value + ' ' + chip.textContent).trim() + ' ';
+      input.focus();
+    });
+  });
+}
+
+function getWordPredictions(partial) {
+  const commonWords = [
+    'help', 'please', 'thank', 'account', 'balance', 
+    'transfer', 'payment', 'problem', 'support', 'agent',
+    'reset', 'pin', 'data', 'airtime', 'mobile money',
+    'transaction', 'customer', 'service', 'complaint', 'status'
+  ];
+  
+  if (!partial) return commonWords.slice(0, 6);
+  
+  return commonWords
+    .filter(word => word.toLowerCase().startsWith(partial.toLowerCase()))
+    .slice(0, 6);
+}
+
+// Audio Recording Functions
+async function startRecording() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    console.warn('WebSocket not connected');
+    connectWebSocket();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    
+    const source = audioContext.createMediaStreamSource(stream);
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+    
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    
+    processor.onaudioprocess = (event) => {
+      if (!isRecording) return;
+      
+      const inputData = event.inputBuffer.getChannelData(0);
+      const int16Data = new Int16Array(inputData.length);
+      
+      for (let i = 0; i < inputData.length; i++) {
+        int16Data[i] = Math.max(-32768, Math.min(32767, Math.floor(inputData[i] * 32767)));
+      }
+      
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(int16Data.buffer);
+      }
+    };
+    
+    isRecording = true;
+    const micCircle = $('mic-circle');
+    micCircle.style.background = 'rgba(0,232,162,0.2)';
+    micCircle.style.borderColor = 'rgba(0,232,162,0.5)';
+    micCircle.style.color = '#00e8a2';
+    setCS('ok', 'Recording...');
+    
+  } catch (error) {
+    console.error('Microphone error:', error);
+    setCS('', 'Microphone access denied');
+  }
+}
+
+function stopRecording() {
+  isRecording = false;
+  
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ action: 'finalize' }));
+  }
+  
+  const micCircle = $('mic-circle');
+  micCircle.style.background = '';
+  micCircle.style.borderColor = '';
+  micCircle.style.color = 'white';
+  
+  if (processor) processor.disconnect();
+  if (audioContext) audioContext.close();
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  
+  processor = null;
+  audioContext = null;
+  stream = null;
+}
+
+function toggleRecording() {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
+}
+
+// UI Functions
+function renderProviders() {
+  const grid = $('provider-grid');
+  grid.innerHTML = providers.map(p => `
+    <div class="provider-card ripple ${p.id}" data-id="${p.id}">
+      <div class="p-logo-wrap"><div class="p-logo-fallback">${p.icon}</div></div>
+      <div class="p-name">${p.name}</div>
+      <div class="p-tag">${p.tag}</div>
+      <div class="p-chevron"><i data-lucide="chevron-right" style="width:14px;height:14px;"></i></div>
+    </div>
+  `).join('');
+  
+  document.querySelectorAll('.provider-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      doRipple(card, e);
+      selectedProvider = providers.find(p => p.id === card.dataset.id);
+      if (selectedProvider) openServices();
+    });
+  });
+  lucide.createIcons();
+}
+
+function openServices() {
+  $('service-nav-title').textContent = selectedProvider.short;
+  $('service-hero-fallback').textContent = selectedProvider.icon;
+  $('service-hero-name').textContent = selectedProvider.name;
+  $('service-hero-tag').textContent = selectedProvider.tag;
+  
+  const serviceScroll = $('service-scroll');
+  serviceScroll.innerHTML = selectedProvider.services.map(s => `
+    <div class="service-item ripple" data-id="${s.id}">
+      <div class="svc-icon-wrap"><i data-lucide="${s.icon}" style="width:20px;height:20px;"></i></div>
+      <div><div class="svc-name">${s.name}</div><div class="svc-sub">${s.sub}</div></div>
+      <div class="svc-arrow"><i data-lucide="chevron-right" style="width:16px;height:16px;"></i></div>
+    </div>
+  `).join('');
+  
+  serviceScroll.querySelectorAll('.service-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      doRipple(item, e);
+      selectedService = selectedProvider.services.find(s => s.id === item.dataset.id);
+      if (selectedService) startCall();
+    });
+  });
+  
+  goTo('screen-service');
+  lucide.createIcons();
+}
+
+function startCall() {
+  $('call-bg').style.background = selectedProvider.bg;
+  $('call-avatar-fallback').textContent = selectedProvider.icon;
+  $('call-pname').textContent = selectedProvider.name;
+  $('call-sname').textContent = selectedService.name;
+  
+  conversation = [];
+  callActive = true;
+  callStartTime = Date.now();
+  resetConversation();
+  
+  setCS('ok', 'Connected');
+  $('call-timer-txt').textContent = '00:00';
+  
+  if (callTimer) clearInterval(callTimer);
+  callTimer = setInterval(() => {
+    if (callActive && callStartTime) {
+      const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      $('call-timer-txt').textContent = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+  }, 1000);
+  
+  goTo('screen-call');
+  
+  // Add greeting
+  setTimeout(() => {
+    addMessage('agent', `Hello! Thank you for contacting ${selectedProvider.name}. How can I help you today?`);
+  }, 500);
+}
+
+function addMessage(role, text, editable = false) {
+  const empty = $('conv-empty');
+  if (empty) empty.remove();
+  
+  const now = new Date();
+  const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+  const row = document.createElement('div');
+  row.className = `brow ${role === 'customer' ? 'you' : 'agent'}`;
+  
+  const meta = document.createElement('div');
+  meta.className = 'bmeta';
+  meta.textContent = role === 'customer' ? `YOU · ${timeStr}` : `AGENT · ${timeStr}`;
+  
+  const bubble = document.createElement('div');
+  bubble.className = `bubble ${role === 'customer' ? 'you' : 'agent'}`;
+  bubble.textContent = text;
+  
+  if (editable && role === 'customer') {
+    bubble.setAttribute('contenteditable', 'true');
+    bubble.addEventListener('blur', () => {
+      updatePredictionChips(bubble.textContent);
+      const index = conversation.findIndex(msg => msg.timestamp === now);
+      if (index !== -1) conversation[index].text = bubble.textContent;
+    });
+    const editTag = document.createElement('span');
+    editTag.className = 'edit-tag';
+    editTag.textContent = 'EDIT';
+    editTag.addEventListener('click', (e) => {
+      e.stopPropagation();
+      bubble.focus();
+    });
+    row.appendChild(meta);
+    row.appendChild(bubble);
+    row.appendChild(editTag);
+  } else {
+    row.appendChild(meta);
+    row.appendChild(bubble);
+  }
+  
+  $('conv-scroll').appendChild(row);
+  $('conv-scroll').scrollTop = $('conv-scroll').scrollHeight;
+  
+  conversation.push({ role, text, timestamp: now });
+}
+
+function generateAgentReply(message) {
+  const lower = message.toLowerCase();
+  if (lower.includes('thank')) return "You're welcome! Is there anything else I can help with?";
+  if (lower.includes('pin')) return "For PIN reset, please verify your registered phone number for security.";
+  if (lower.includes('balance')) return "Your current balance is UGX 1,245,000. Would you like to see recent transactions?";
+  if (lower.includes('agent')) return "I'll connect you to a senior agent. Please hold for a moment...";
+  if (lower.includes('repeat')) return "Of course! How can I assist you with your inquiry?";
+  if (lower.includes('data')) return "We have various data bundles available. 1GB at UGX 2,500, 5GB at UGX 10,000. Which would you prefer?";
+  if (lower.includes('transfer')) return "You can transfer money via mobile money, internet banking, or at any branch.";
+  return "I understand your concern. Let me help you with that. Could you provide more details?";
+}
+
+function sendCustomerMessage() {
+  const input = $('text-input');
+  const text = input.value.trim();
+  if (!text) return;
+  
+  addMessage('customer', text, true);
+  input.value = '';
+  input.style.height = 'auto';
+  updatePredictionChips('');
+  
+  setTimeout(() => {
+    const reply = generateAgentReply(text);
+    addMessage('agent', reply);
+  }, 600);
+}
+
+function resetConversation() {
+  const scroll = $('conv-scroll');
+  scroll.innerHTML = '<div class="conv-empty" id="conv-empty"><div class="conv-empty-icon"><i data-lucide="mic" style="width:36px;height:36px;"></i></div><div class="conv-empty-txt">Your conversation appears here<br>as you speak</div></div>';
+  lucide.createIcons();
+  conversation = [];
+}
+
+function endCall() {
+  if (!callActive) return;
+  
+  if (isRecording) stopRecording();
+  
+  callActive = false;
+  if (callTimer) clearInterval(callTimer);
+  
+  addMessage('agent', "Thank you for contacting us. Have a great day!");
+  
+  setTimeout(() => {
+    goTo('screen-home');
+    resetConversation();
+    setCS('', 'Disconnected');
+    $('live-card-txt').textContent = 'Tap mic to start speaking...';
+    selectedProvider = null;
+    selectedService = null;
+    closeTP();
+  }, 2000);
+}
+
+function setCS(type, msg) {
+  const dot = $('csdot');
+  const txt = $('cstxt');
+  if (type) dot.className = `csdot ${type}`;
+  txt.textContent = msg;
+}
+
+function goTo(screenId) {
+  document.querySelectorAll('.screen').forEach(s => {
+    s.classList.add('hidden');
+  });
+  $(screenId).classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeTP() { $('tp').classList.remove('open'); }
+function openTP() { $('tp').classList.add('open'); }
+
+function doRipple(el, e) {
+  const rect = el.getBoundingClientRect();
+  const x = (e.clientX || (e.touches ? e.touches[0].clientX : 0)) - rect.left;
+  const y = (e.clientY || (e.touches ? e.touches[0].clientY : 0)) - rect.top;
+  const ripple = document.createElement('div');
+  ripple.className = 'ripple-fx';
+  const size = rect.width * 1.8;
+  ripple.style.cssText = `width:${size}px;height:${size}px;left:${x - size/2}px;top:${y - size/2}px`;
+  el.appendChild(ripple);
+  ripple.addEventListener('animationend', () => ripple.remove());
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Event Listeners
+function setupEventListeners() {
+  $('btn-back-home').addEventListener('click', () => goTo('screen-home'));
+  $('btn-end').addEventListener('click', endCall);
+  $('btn-open-tp').addEventListener('click', openTP);
+  $('tp-close').addEventListener('click', closeTP);
+  $('tp-drag').addEventListener('click', closeTP);
+  $('send-btn').addEventListener('click', sendCustomerMessage);
+  $('btn-mic').addEventListener('click', toggleRecording);
+  
+  $('text-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendCustomerMessage();
+    }
+  });
+  
+  $('text-input').addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 110) + 'px';
+    updatePredictionChips(this.value);
+  });
+  
+  document.querySelectorAll('.qchip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      $('text-input').value = chip.dataset.txt;
+      $('text-input').focus();
+      updatePredictionChips(chip.dataset.txt);
+    });
+  });
+  
+  $('btn-settings').addEventListener('click', () => {
+    $('settings-panel').classList.add('open');
+    $('overlay').classList.add('show');
+  });
+  
+  $('settings-close').addEventListener('click', () => {
+    $('settings-panel').classList.remove('open');
+    $('overlay').classList.remove('show');
+  });
+  
+  $('overlay').addEventListener('click', () => {
+    $('settings-panel').classList.remove('open');
+    $('overlay').classList.remove('show');
+  });
+  
+  // Theme
+  $('theme-grid').querySelectorAll('.theme-swatch').forEach(sw => {
+    sw.addEventListener('click', () => {
+      const theme = sw.dataset.theme;
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('theme', theme);
+      $('theme-grid').querySelectorAll('.theme-swatch').forEach(s => s.classList.toggle('active', s === sw));
+    });
+  });
+}
+
+function loadTheme() {
+  const saved = localStorage.getItem('theme');
+  if (saved) {
+    document.documentElement.setAttribute('data-theme', saved);
+    $('theme-grid').querySelectorAll('.theme-swatch').forEach(s => s.classList.toggle('active', s.dataset.theme === saved));
+  }
+}
+
+function loadProfile() {
+  const name = localStorage.getItem('user_name') || '';
+  const phone = localStorage.getItem('user_phone') || '';
+  $('profile-name').value = name;
+  $('profile-phone').value = phone;
+  $('profile-avatar-circle').textContent = name ? name[0].toUpperCase() : '?';
+  
+  $('profile-name').addEventListener('input', (e) => {
+    localStorage.setItem('user_name', e.target.value);
+    $('profile-avatar-circle').textContent = e.target.value[0]?.toUpperCase() || '?';
+  });
+  $('profile-phone').addEventListener('input', (e) => localStorage.setItem('user_phone', e.target.value));
+}
+
+// Initialize App
+function init() {
+  renderProviders();
+  setupEventListeners();
+  loadTheme();
+  loadProfile();
+  connectWebSocket();
+  updatePredictionChips('');
+}
+
+init();
+</script>
+</body>
+</html>
