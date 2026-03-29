@@ -449,7 +449,7 @@ class StreamingWhisperService:
         web_app.add_middleware(
             CORSMiddleware,
             allow_origins=[
-                "https://your-netlify-site.netlify.app",  # ← REPLACE WITH YOUR ACTUAL NETLIFY URL
+                "https://30sai.netlify.app",  
                 "http://localhost:8000",
                 "http://localhost:3000",
                 "http://127.0.0.1:8000",
