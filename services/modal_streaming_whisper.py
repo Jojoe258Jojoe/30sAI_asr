@@ -17,6 +17,7 @@ import logging
 from typing import Optional, Dict, Any
 import io
 import soundfile as sf
+from faster_whisper import WhisperModel
 
 MODAL_APP_NAME = "streaming_whisper"
 
@@ -384,9 +385,9 @@ class StreamingWhisperService:
     
     @modal.fastapi_endpoint(docs=True, method="POST")
     def transcribe_file(self, 
-                       wav: bytes = File(..., description="WAV audio file (16kHz mono)"),
-                       language: str = Form(default=None, description="Optional language code"),
-                       word_timestamps: bool = Form(default=False, description="Include word-level timestamps")):
+                       wav: bytes = modal.File(..., description="WAV audio file (16kHz mono)"),
+                       language: str = modal.Form(default=None, description="Optional language code"),
+                       word_timestamps: bool = modal.Form(default=False, description="Include word-level timestamps")):
         """Simple file-based transcription endpoint (non-streaming)."""
         import librosa
         
@@ -414,7 +415,7 @@ class StreamingWhisperService:
                 'start': segment.start,
                 'end': segment.end,
                 'text': segment.text,
-                'confidence': np.exp(segment.avg_logprob)
+                'confidence': float(np.exp(segment.avg_logprob))
             })
             
             if segment.words:
@@ -431,31 +432,170 @@ class StreamingWhisperService:
             'transcription': transcription.strip(),
             'segments': all_segments,
             'words': all_words if word_timestamps else None,
-            'language_detected': None  # Add if needed
+            'language_detected': None
         }
     
     @modal.asgi_app()
     def streaming_endpoint(self):
-        """WebSocket endpoint for real-time streaming."""
+        """WebSocket endpoint for real-time streaming with CORS support."""
         from fastapi import FastAPI, WebSocket, WebSocketDisconnect
         from fastapi.responses import HTMLResponse
+        from fastapi.middleware.cors import CORSMiddleware
         
-        web_app = FastAPI()
+        web_app = FastAPI(title="30sAI Whisper Streaming Service", version="1.0.0")
+        
+        # Configure CORS for Netlify and local development
+        # IMPORTANT: Replace with your actual Netlify URL before deploying!
+        web_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[
+                "https://your-netlify-site.netlify.app",  # ← REPLACE WITH YOUR ACTUAL NETLIFY URL
+                "http://localhost:8000",
+                "http://localhost:3000",
+                "http://127.0.0.1:8000",
+                "http://127.0.0.1:3000",
+                # For testing with any origin (remove in production):
+                # "*",
+            ],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=["*"],
+        )
         
         @web_app.get("/")
-        async def get():
+        async def get_index():
             return HTMLResponse("""
+            <!DOCTYPE html>
             <html>
+                <head>
+                    <title>30sAI Whisper Streaming Service</title>
+                    <style>
+                        body {
+                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                            max-width: 800px;
+                            margin: 0 auto;
+                            padding: 20px;
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            min-height: 100vh;
+                        }
+                        .container {
+                            background: white;
+                            border-radius: 20px;
+                            padding: 30px;
+                            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                        }
+                        h1 {
+                            color: #333;
+                            margin-bottom: 10px;
+                        }
+                        .status {
+                            padding: 10px;
+                            border-radius: 8px;
+                            margin: 20px 0;
+                            font-family: monospace;
+                        }
+                        .online {
+                            background: #d4edda;
+                            color: #155724;
+                        }
+                        code {
+                            background: #f4f4f4;
+                            padding: 2px 6px;
+                            border-radius: 4px;
+                            font-family: monospace;
+                        }
+                        pre {
+                            background: #f4f4f4;
+                            padding: 15px;
+                            border-radius: 8px;
+                            overflow-x: auto;
+                            font-size: 12px;
+                        }
+                        .endpoint {
+                            background: #e7f3ff;
+                            padding: 15px;
+                            border-radius: 8px;
+                            margin: 20px 0;
+                        }
+                    </style>
+                </head>
                 <body>
-                    <h1>Whisper Streaming Service</h1>
-                    <p>WebSocket endpoint available at: ws://[your-url]/ws</p>
-                    <p>Send audio chunks as binary data (16kHz PCM int16)</p>
+                    <div class="container">
+                        <h1>🎙️ 30sAI Whisper Streaming Service</h1>
+                        <p>Real-time speech-to-text streaming with fine-tuned Whisper model</p>
+                        
+                        <div class="status online">
+                            ✅ Service is online and ready
+                        </div>
+                        
+                        <div class="endpoint">
+                            <strong>🔌 WebSocket Endpoint:</strong><br>
+                            <code>wss://[your-app].modal.run/ws</code>
+                        </div>
+                        
+                        <h2>📝 Quick Test with Python:</h2>
+                        <pre>
+import asyncio
+import websockets
+import numpy as np
+import soundfile as sf
+
+async def test_streaming():
+    uri = "wss://your-app.modal.run/ws"
+    async with websockets.connect(uri) as ws:
+        # Load and stream audio
+        audio, sr = sf.read('test.wav')
+        if sr != 16000:
+            from scipy import signal
+            audio = signal.resample(audio, int(len(audio) * 16000 / sr))
+        
+        chunk_size = 16000
+        for i in range(0, len(audio), chunk_size):
+            chunk = audio[i:i+chunk_size]
+            bytes_data = (chunk * 32767).astype(np.int16).tobytes()
+            await ws.send(bytes_data)
+            response = await ws.recv()
+            print(response)
+        
+        await ws.send('{"action": "finalize"}')
+        final = await ws.recv()
+        print(f"Final: {final}")
+
+asyncio.run(test_streaming())
+                        </pre>
+                        
+                        <h2>🌐 Browser Client:</h2>
+                        <p>Download the complete HTML client from your Netlify deployment or use the WebSocket endpoint directly.</p>
+                        
+                        <h2>📊 Endpoints:</h2>
+                        <ul>
+                            <li><code>GET /</code> - This status page</li>
+                            <li><code>WS /ws</code> - WebSocket endpoint for streaming</li>
+                            <li><code>POST /transcribe-file</code> - File upload endpoint</li>
+                            <li><code>GET /health</code> - Health check</li>
+                        </ul>
+                        
+                        <hr>
+                        <p style="color: #666; font-size: 12px;">Powered by Modal Labs & Faster-Whisper</p>
+                    </div>
                 </body>
             </html>
             """)
         
+        @web_app.get("/health")
+        async def health_check():
+            """Health check endpoint."""
+            return {
+                "status": "healthy",
+                "model": self.model_id,
+                "sample_rate": SAMPLE_RATE,
+                "beam_size": BEAM_SIZE
+            }
+        
         @web_app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
+            """WebSocket endpoint for real-time audio streaming."""
             await websocket.accept()
             print("WebSocket connection accepted")
             
@@ -473,12 +613,22 @@ class StreamingWhisperService:
                 print("WebSocket disconnected")
             except Exception as e:
                 print(f"Error in WebSocket: {e}")
+                try:
+                    await websocket.send(json.dumps({'error': str(e)}))
+                except:
+                    pass
             finally:
                 # Send final transcription if any
                 final = processor.finish()
                 if final:
-                    await websocket.send(json.dumps(final))
-                await websocket.close()
+                    try:
+                        await websocket.send(json.dumps(final))
+                    except:
+                        pass
+                try:
+                    await websocket.close()
+                except:
+                    pass
                 
         return web_app
 
@@ -532,6 +682,8 @@ async def stream_audio():
             print(response)
         # Signal end of stream
         await websocket.send('{"action": "finalize"}')
+        final = await websocket.recv()
+        print(f"Final: {final}")
 
 asyncio.run(stream_audio())
     """)
