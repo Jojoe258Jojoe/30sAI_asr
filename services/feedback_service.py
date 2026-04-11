@@ -9,6 +9,8 @@ import json
 import base64
 import time
 from datetime import datetime
+from typing import Optional
+from fastapi import Body
 
 # Create Modal app
 app = modal.App("feedback-service")
@@ -94,8 +96,18 @@ class FeedbackService:
         return {"total_pairs": len(json_files)}
 
     @modal.fastapi_endpoint(method="POST")
-    def save_correction_web(self, audio_b64: str, original: str, corrected: str) -> dict:
-        """HTTP endpoint for saving corrections (called from frontend)"""
+    def save_correction_web(
+        self,
+        audio_b64: str = "",
+        original: str = "",
+        corrected: str = "",
+        payload: Optional[dict] = Body(default=None),
+    ) -> dict:
+        """HTTP endpoint for saving corrections (supports JSON body or query params)."""
+        if payload:
+            audio_b64 = payload.get("audio_b64", audio_b64)
+            original = payload.get("original", original)
+            corrected = payload.get("corrected", corrected)
         return self.save_correction.local(audio_b64, original, corrected)
 
     @modal.fastapi_endpoint(method="GET")

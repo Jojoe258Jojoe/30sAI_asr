@@ -534,6 +534,24 @@
       display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
       padding: 8px 20px 0;
     }
+    .service-actions {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 20px 0;
+      min-height: 26px;
+    }
+    .btn-health-check {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.2px;
+      color: var(--blue); background: var(--blue-dim);
+      border: 1px solid rgba(77,143,255,0.35);
+      border-radius: 999px; padding: 4px 10px;
+      transition: transform 0.1s, opacity 0.15s;
+    }
+    .btn-health-check:active { transform: scale(0.98); }
+    .service-health-msg {
+      font-size: 11px; color: var(--text-2);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 210px;
+    }
     .status-dot {
       display: flex; align-items: center; gap: 4px;
       font-size: 10px; font-weight: 600; color: var(--text-3);
@@ -769,6 +787,10 @@
           <span class="status-dot" id="dot-tts">TTS</span>
           <span class="status-dot" id="dot-feedback">Feedback</span>
         </div>
+        <div class="service-actions">
+          <button class="btn-health-check" type="button" onclick="checkServiceEndpoints(true)">Check APIs</button>
+          <span class="service-health-msg" id="service-health-msg">Not checked yet</span>
+        </div>
       </div>
 
       <!-- Transcript -->
@@ -988,6 +1010,7 @@ function saveSettings() {
     debugLogs: cfg.debugLogs,
   });
   showToast('Settings saved ✓');
+  checkServiceEndpoints(false);
   setTimeout(() => goTo('dialer'), 600);
 }
 
@@ -1561,10 +1584,12 @@ async function fetchPredictions(text) {
   }
 
   try {
-    const res = await fetch(cfg.gpt2Url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, n: 4 })
+    const u = new URL(cfg.gpt2Url);
+    u.searchParams.set('text', text);
+    u.searchParams.set('n', '4');
+
+    const res = await fetch(u.toString(), {
+      method: 'POST'
     });
     const data = await res.json();
     const preds = Array.isArray(data) ? data : (data.predictions || data.result || []);
@@ -1749,6 +1774,97 @@ function updateServiceDots() {
   setDot('feedback', cfg.feedbackUrl  ? 'connecting' : 'error');
 }
 
+function wsToHttpBase(wsUrl) {
+  try {
+    const u = new URL(wsUrl);
+    u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:';
+    u.pathname = '/';
+    u.search = '';
+    u.hash = '';
+    return u.toString().replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function setServiceHealthMsg(msg) {
+  const el = document.getElementById('service-health-msg');
+  if (el) el.textContent = msg;
+}
+
+async function checkServiceEndpoints(showToastMsg = true) {
+  setServiceHealthMsg('Checking services...');
+  dbg('services.check.start', {
+    whisperWs: cfg.whisperWs,
+    gpt2Url: cfg.gpt2Url,
+    feedbackUrl: cfg.feedbackUrl,
+    ttsUrl: cfg.ttsUrl,
+  });
+
+  const results = {
+    whisper: { ok: false, note: 'not configured' },
+    gpt2: { ok: false, note: 'not configured' },
+    feedback: { ok: false, note: 'not configured' },
+  };
+
+  // Whisper health
+  if (cfg.whisperWs) {
+    setDot('whisper', 'connecting');
+    try {
+      const base = wsToHttpBase(cfg.whisperWs);
+      const res = await fetch(base + '/health');
+      results.whisper.ok = res.ok;
+      results.whisper.note = `HTTP ${res.status}`;
+      setDot('whisper', res.ok ? 'ok' : 'error');
+    } catch (e) {
+      results.whisper.note = String(e);
+      setDot('whisper', 'error');
+    }
+  }
+
+  // GPT check
+  if (cfg.gpt2Url) {
+    setDot('gpt2', 'connecting');
+    try {
+      const u = new URL(cfg.gpt2Url);
+      u.searchParams.set('text', 'hello there');
+      u.searchParams.set('n', '2');
+      const res = await fetch(u.toString(), { method: 'POST' });
+      const ok = res.ok;
+      results.gpt2.ok = ok;
+      results.gpt2.note = `HTTP ${res.status}`;
+      setDot('gpt2', ok ? 'ok' : 'error');
+    } catch (e) {
+      results.gpt2.note = String(e);
+      setDot('gpt2', 'error');
+    }
+  }
+
+  // Feedback reachability (safe: GET should not create records)
+  if (cfg.feedbackUrl) {
+    setDot('feedback', 'connecting');
+    try {
+      const res = await fetch(cfg.feedbackUrl, { method: 'GET' });
+      const reachable = res.ok || [405, 422].includes(res.status);
+      results.feedback.ok = reachable;
+      results.feedback.note = `HTTP ${res.status}`;
+      setDot('feedback', reachable ? 'ok' : 'error');
+    } catch (e) {
+      results.feedback.note = String(e);
+      setDot('feedback', 'error');
+    }
+  }
+
+  const okCount = [results.whisper.ok, results.gpt2.ok, results.feedback.ok].filter(Boolean).length;
+  const msg = `${okCount}/3 ready · W:${results.whisper.ok ? 'OK' : 'ERR'} G:${results.gpt2.ok ? 'OK' : 'ERR'} F:${results.feedback.ok ? 'OK' : 'ERR'}`;
+  setServiceHealthMsg(msg);
+  dbg('services.check.done', { results, summary: msg }, okCount === 3 ? 'info' : 'warn');
+
+  if (showToastMsg) {
+    showToast(okCount === 3 ? 'Services ready ✓' : 'Some services failed check');
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════════
    WAVEFORM VISUALIZER
 ══════════════════════════════════════════════════════════════════ */
@@ -1817,6 +1933,10 @@ document.addEventListener('click', (e) => {
 ══════════════════════════════════════════════════════════════════ */
 if (cfg.whisperWs) {
   goTo('dialer');
+}
+
+if (cfg.whisperWs || cfg.gpt2Url || cfg.feedbackUrl) {
+  setTimeout(() => checkServiceEndpoints(false), 300);
 }
 
 // Auto-init browser TTS dot

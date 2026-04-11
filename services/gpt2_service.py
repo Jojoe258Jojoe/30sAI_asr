@@ -6,10 +6,10 @@ Generates word predictions based on conversation context
 import modal
 import torch
 import re
-from typing import List
+import os
 
 # Create Modal app
-app = modal.App("gpt2-service")
+app = modal.App("gpt2-service-v2")
 
 # Volume for models
 models_volume = modal.Volume.from_name("aac-models", create_if_missing=True)
@@ -36,6 +36,10 @@ try:
 except Exception:
     hf_secret = None
 
+# Toggle GPU usage for GPT inference.
+# Default is CPU for stability; set GPT2_USE_GPU=1 to enable GPU explicitly.
+USE_GPU = os.environ.get("GPT2_USE_GPU", "0") == "1"
+
 
 def clean_text(text: str) -> str:
     """Remove disfluency markers and normalize"""
@@ -43,14 +47,18 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-@app.cls(
-    gpu="L4",
-    memory=2048,
-    image=gpt2_image,
-    scaledown_window=300,
-    secrets=[hf_secret] if hf_secret else [],
-    volumes={MODELS_PATH: models_volume},
-)
+gpt2_cls_kwargs = {
+    "memory": 2048,
+    "image": gpt2_image,
+    "scaledown_window": 600,
+    "secrets": [hf_secret] if hf_secret else [],
+    "volumes": {MODELS_PATH: models_volume},
+}
+if USE_GPU:
+    gpt2_cls_kwargs["gpu"] = "L4"
+
+
+@app.cls(**gpt2_cls_kwargs)
 class GPT2Service:
     """GPT-2 next-word prediction service"""
     
@@ -58,18 +66,17 @@ class GPT2Service:
     def load(self):
         """Load GPT-2 model"""
         from transformers import AutoModelForCausalLM, AutoTokenizer
-        import os
         
         self.ready = False
+        self.device = torch.device("cuda" if USE_GPU and torch.cuda.is_available() else "cpu")
+        print(f"GPT2 device selected: {self.device}")
         
         def load_model(path: str):
             tokenizer = AutoTokenizer.from_pretrained(path)
             tokenizer.pad_token = tokenizer.eos_token
             model = AutoModelForCausalLM.from_pretrained(path)
             model.eval()
-            # Move model to GPU for faster inference
-            if torch.cuda.is_available():
-                model = model.to('cuda')
+            model = model.to(self.device)
             return tokenizer, model
         
         # Try loading from volume
@@ -108,19 +115,53 @@ class GPT2Service:
             return []
         
         text = clean_text(text)
-        inputs = self.tokenizer(text, return_tensors="pt")
+        encoded = self.tokenizer(text, return_tensors="pt")
+        model_device = next(self.model.parameters()).device
+        input_ids = encoded["input_ids"].to(model_device)
+        attention_mask = encoded.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(model_device)
+
+        print(
+            f"Predict request device check: model={model_device}, "
+            f"input_ids={input_ids.device}, "
+            f"attention_mask={attention_mask.device if attention_mask is not None else 'none'}"
+        )
         
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=5,
-                num_return_sequences=n,
-                do_sample=True,
-                temperature=0.75,
-                top_k=50,
-                top_p=0.92,
-                pad_token_id=self.tokenizer.eos_token_id,
-            )
+        try:
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=5,
+                    num_return_sequences=n,
+                    do_sample=True,
+                    temperature=0.75,
+                    top_k=50,
+                    top_p=0.92,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                )
+        except RuntimeError as e:
+            # Safety fallback: if any device mismatch slips through, retry on CPU
+            # so predictions keep working for the UI.
+            if "Expected all tensors to be on the same device" not in str(e):
+                raise
+            print(f"GPU generation failed ({e}); retrying on CPU")
+            self.model = self.model.to("cpu")
+            self.device = torch.device("cpu")
+            with torch.no_grad():
+                cpu_inputs = self.tokenizer(text, return_tensors="pt")
+                outputs = self.model.generate(
+                    input_ids=cpu_inputs["input_ids"],
+                    attention_mask=cpu_inputs.get("attention_mask"),
+                    max_new_tokens=5,
+                    num_return_sequences=n,
+                    do_sample=True,
+                    temperature=0.75,
+                    top_k=50,
+                    top_p=0.92,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                )
         
         seen = set()
         predictions = []
@@ -154,5 +195,5 @@ class GPT2Service:
 
     @modal.fastapi_endpoint(method="POST")
     def predict_web(self, text: str, n: int = 4) -> list:
-        """HTTP endpoint for next-word prediction (called from frontend)"""
+        """HTTP endpoint for next-word prediction (query params)."""
         return self.predict.local(text, n)
