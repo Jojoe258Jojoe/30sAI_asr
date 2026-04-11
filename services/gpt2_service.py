@@ -26,6 +26,7 @@ gpt2_image = (
         "accelerate==0.24.1",
         "peft==0.7.0",
         "numpy",
+        "fastapi[standard]",
     )
 )
 
@@ -43,7 +44,7 @@ def clean_text(text: str) -> str:
 
 
 @app.cls(
-    cpu=2,
+    gpu="L4",
     memory=2048,
     image=gpt2_image,
     scaledown_window=300,
@@ -66,6 +67,9 @@ class GPT2Service:
             tokenizer.pad_token = tokenizer.eos_token
             model = AutoModelForCausalLM.from_pretrained(path)
             model.eval()
+            # Move model to GPU for faster inference
+            if torch.cuda.is_available():
+                model = model.to('cuda')
             return tokenizer, model
         
         # Try loading from volume
@@ -147,3 +151,8 @@ class GPT2Service:
                     break
         
         return predictions[:n]
+
+    @modal.fastapi_endpoint(method="POST")
+    def predict_web(self, text: str, n: int = 4) -> list:
+        """HTTP endpoint for next-word prediction (called from frontend)"""
+        return self.predict.local(text, n)

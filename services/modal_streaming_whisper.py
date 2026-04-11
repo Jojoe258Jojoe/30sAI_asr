@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any
 import io
 import soundfile as sf
 from faster_whisper import WhisperModel
+from fastapi import UploadFile, File, Query
 
 MODAL_APP_NAME = "streaming_whisper"
 
@@ -32,10 +33,41 @@ GPU = 'L4'
 SCALEDOWN = 60 * 5  # 5 minutes for streaming service
 
 HUGGINGFACE_REPO = "cdli/whisper-large-v3_finetuned_ugandan_english_nonstandard_speech_v1.0"
-
-# Customize for your use case - can use any Whisper model
 MODEL_ID = HUGGINGFACE_REPO
-# MODEL_ID = "openai/whisper-large-v3-turbo"  # Alternative
+
+
+def _patch_mel_bins(model_path, n_mels=128):
+    """
+    Patch both config.json and preprocessor_config.json in the converted model
+    directory to use the correct number of mel bins.
+
+    faster-whisper derives the mel filterbank size from config.json (num_mel_bins),
+    NOT from the feature_extractor attribute at runtime.  If config.json still says
+    80, the spectrogram will be 80-bin regardless of any runtime patching, and the
+    encoder (which was fine-tuned with 128 bins) will reject it.
+    """
+    import json as _json
+
+    for cfg_name in ("config.json", "preprocessor_config.json"):
+        cfg_path = model_path / cfg_name
+        if not cfg_path.exists():
+            continue
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = _json.load(f)
+
+        changed = False
+        for key in ("num_mel_bins", "n_mels"):
+            if key in cfg and cfg[key] != n_mels:
+                print(f"Patching {cfg_name}: {key} {cfg[key]} -> {n_mels}")
+                cfg[key] = n_mels
+                changed = True
+
+        if changed:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                _json.dump(cfg, f, ensure_ascii=False, indent=2)
+        else:
+            print(f"{cfg_name}: mel bins already correct ({n_mels})")
+
 
 def maybe_download_and_convert_model(model_storage_dir, model_id):
     """Download and convert model to CTranslate2 format if not available locally."""
@@ -45,11 +77,12 @@ def maybe_download_and_convert_model(model_storage_dir, model_id):
 
     subdir = model_id.replace("/", "_") + "_ct2"
     model_path = model_storage_dir / subdir
+    model_bin_path = model_path / "model.bin"
     print(f"Looking for model at: {model_path}")
 
-    if not model_path.exists():
-        print(f"Model not found in cache -- downloading from HuggingFace: {model_id}")
-        model_path.mkdir(parents=True)
+    if not model_path.exists() or not model_bin_path.exists():
+        print(f"Model not found in cache or incomplete -- downloading from HuggingFace: {model_id}")
+        model_path.mkdir(parents=True, exist_ok=True)
 
         converter = ctranslate2.converters.TransformersConverter(
             model_name_or_path=model_id,
@@ -60,12 +93,15 @@ def maybe_download_and_convert_model(model_storage_dir, model_id):
     else:
         print(f"Found cached model at {model_path}")
 
+    # Always patch mel bin counts — even on a cached model the config may be wrong.
+    _patch_mel_bins(model_path, n_mels=128)
+
     return str(model_path)
 
 
 class HypothesisBuffer:
     """Manages partial transcriptions and handles word-level streaming."""
-    
+
     def __init__(self):
         self.commited_in_buffer = []
         self.buffer = []
@@ -74,14 +110,17 @@ class HypothesisBuffer:
         self.last_commited_word = None
 
     def insert(self, new_words, offset):
-        """Insert new words with timestamp offset."""
-        # Add offset to timestamps
-        new = [(a + offset, b + offset, t) for a, b, t in new_words]
-        
-        # Filter words that are after last committed time
-        self.new = [(a, b, t) for a, b, t in new if a > self.last_commited_time - 0.1]
-        
-        # Remove duplicate n-grams (avoid repeating same text)
+        """
+        Insert new words with timestamp offset.
+        NOTE: offset is NOT pre-added here — words are stored with their raw
+        model-relative timestamps. The offset is only applied in _format_output
+        so it is never double-counted.
+        """
+        # Store words with raw timestamps (no offset baked in)
+        self.new = [(a, b, t) for a, b, t in new_words
+                    if a > self.last_commited_time - 0.1]
+
+        # Remove duplicate n-grams at the seam to avoid repeating text
         if len(self.new) >= 1:
             a, b, t = self.new[0]
             if abs(a - self.last_commited_time) < 1:
@@ -89,23 +128,36 @@ class HypothesisBuffer:
                     cn = len(self.commited_in_buffer)
                     nn = len(self.new)
                     for i in range(1, min(min(cn, nn), 5) + 1):
-                        c = " ".join([self.commited_in_buffer[-j][2] for j in range(1, i+1)][::-1])
-                        tail = " ".join(self.new[j-1][2] for j in range(1, i+1))
+                        c = " ".join(
+                            [self.commited_in_buffer[-j][2] for j in range(1, i + 1)][::-1]
+                        )
+                        tail = " ".join(self.new[j - 1][2] for j in range(1, i + 1))
                         if c == tail:
                             for j in range(i):
                                 self.new.pop(0)
                             break
 
     def flush(self):
-        """Return committed chunk - the longest common prefix of last two inserts."""
+        """
+        Commit the longest stable prefix — words that appear identically in both
+        the current transcription pass (self.new) and the previous one (self.buffer).
+
+        FIX: comparison is now case-insensitive and strips punctuation so that minor
+        Whisper variations (capitalisation, trailing comma) don't block commitment.
+        """
+        import re
+
+        def _normalise(w):
+            return re.sub(r"[^\w]", "", w).lower()
+
         commit = []
         while self.new:
-            na, nb, nt = self.new[0]
-            
             if len(self.buffer) == 0:
                 break
-                
-            if nt == self.buffer[0][2]:
+            na, nb, nt = self.new[0]
+            bt = self.buffer[0][2]
+            if _normalise(nt) == _normalise(bt):
+                # Use the text form from the newer pass (self.new) as it is fresher
                 commit.append((na, nb, nt))
                 self.last_commited_word = nt
                 self.last_commited_time = nb
@@ -113,208 +165,294 @@ class HypothesisBuffer:
                 self.new.pop(0)
             else:
                 break
-                
+
         self.buffer = self.new
         self.new = []
         self.commited_in_buffer.extend(commit)
         return commit
 
     def pop_commited(self, time):
-        """Remove committed words before timestamp."""
+        """Remove committed words whose end timestamp is before `time`."""
         while self.commited_in_buffer and self.commited_in_buffer[0][1] <= time:
             self.commited_in_buffer.pop(0)
 
     def complete(self):
-        """Return incomplete buffer."""
+        """Return the current unconfirmed buffer (partial words)."""
         return self.buffer
 
 
 class StreamingASRProcessor:
     """Processes audio chunks in real-time and returns partial transcriptions."""
-    
-    def __init__(self, whisper_model, min_chunk_size=MIN_CHUNK_SIZE, 
+
+    def __init__(self, whisper_model, min_chunk_size=MIN_CHUNK_SIZE,
                  buffer_trimming_sec=BUFFER_TRIMMING_SEC):
         self.whisper_model = whisper_model
         self.min_chunk_size = min_chunk_size
         self.buffer_trimming_sec = buffer_trimming_sec
-        
+
         self.audio_buffer = np.array([], dtype=np.float32)
         self.transcript_buffer = HypothesisBuffer()
-        self.buffer_time_offset = 0
+        self.buffer_time_offset = 0.0
         self.commited = []
-        
-        # Streaming configuration
+
         self.beam_size = BEAM_SIZE
         self.vad_filter = True
-        
+
     def insert_audio_chunk(self, audio: np.ndarray):
         """Append audio chunk to buffer."""
         self.audio_buffer = np.append(self.audio_buffer, audio)
-        
+
     def get_prompt(self):
         """Generate prompt from recent context for better continuity."""
         k = max(0, len(self.commited) - 1)
-        while k > 0 and self.commited[k-1][1] > self.buffer_time_offset:
+        while k > 0 and self.commited[k - 1][1] > self.buffer_time_offset:
             k -= 1
-            
-        # Get prompt from recent text
         p = self.commited[:k]
         p = [t for _, _, t in p]
         prompt = []
         l = 0
-        while p and l < 200:  # 200 character prompt limit
+        while p and l < 200:
             x = p.pop(-1)
             l += len(x) + 1
             prompt.append(x)
-            
         return " ".join(prompt[::-1])
-    
-    def process_iter(self):
-        """Process current audio buffer and return new transcription."""
-        if len(self.audio_buffer) / SAMPLE_RATE < self.min_chunk_size:
-            return None
-            
+
+    def _run_transcribe(self):
+        """Run faster-whisper on the current audio buffer. Returns word list."""
         prompt = self.get_prompt()
-        
-        # Run transcription on current buffer
-        segments, _ = self.whisper_model.transcribe(
-            self.audio_buffer,
-            beam_size=self.beam_size,
-            language=None,  # Auto-detect
-            task="transcribe",
-            initial_prompt=prompt if prompt else None,
-            vad_filter=self.vad_filter,
-            word_timestamps=True,
-            condition_on_previous_text=False,
-        )
-        
-        # Extract words with timestamps
+
+        try:
+            segments, _ = self.whisper_model.transcribe(
+                self.audio_buffer,
+                beam_size=self.beam_size,
+                language=None,
+                task="transcribe",
+                initial_prompt=prompt if prompt else None,
+                vad_filter=self.vad_filter,
+                word_timestamps=True,
+                condition_on_previous_text=False,
+            )
+        except (RuntimeError, ValueError) as e:
+            if "Invalid input features shape" in str(e):
+                print(f"Feature mismatch detected: {e}. Reinitialising FeatureExtractor with n_mels=128.")
+                try:
+                    fe = self.whisper_model.feature_extractor
+                    FeatureExtractor = type(fe)
+                    self.whisper_model.feature_extractor = FeatureExtractor(feature_size=128)
+                    print(f"FeatureExtractor ({FeatureExtractor.__name__}) replaced. Retrying.")
+                    segments, _ = self.whisper_model.transcribe(
+                        self.audio_buffer,
+                        beam_size=self.beam_size,
+                        language=None,
+                        task="transcribe",
+                        initial_prompt=prompt if prompt else None,
+                        vad_filter=self.vad_filter,
+                        word_timestamps=True,
+                        condition_on_previous_text=False,
+                    )
+                except Exception as retry_e:
+                    print(f"Retry transcription also failed: {retry_e}")
+                    return []
+            else:
+                raise
+
         timestamped_words = []
         for segment in segments:
             if segment.words:
                 for word in segment.words:
                     timestamped_words.append((word.start, word.end, word.word))
-        
-        # Insert into hypothesis buffer
+        return timestamped_words
+
+    def process_iter(self):
+        """
+        Process current audio buffer and return new transcription.
+        Returns a result dict, or None if there is nothing new to report.
+        """
+        if len(self.audio_buffer) / SAMPLE_RATE < self.min_chunk_size:
+            return None
+
+        timestamped_words = self._run_transcribe()
+
+        # Pass raw (no-offset) timestamps to the buffer; offset is applied in
+        # _format_output so it is added exactly once.
         self.transcript_buffer.insert(timestamped_words, self.buffer_time_offset)
-        
-        # Get committed words
         committed = self.transcript_buffer.flush()
         self.commited.extend(committed)
-        
-        # Format output
-        result = self._format_output(committed)
-        
-        # Trim buffer if too long
+
+        result = self._format_output(committed, is_partial=True)
+
+        # FIX: if nothing was committed yet (first chunk, or words not stable),
+        # fall back to sending the unconfirmed buffer as a clearly-marked partial
+        # result so downstream services always receive progress.
+        if result is None:
+            partial_words = self.transcript_buffer.complete()
+            if partial_words:
+                result = self._format_output(partial_words, is_partial=True)
+
         if len(self.audio_buffer) / SAMPLE_RATE > self.buffer_trimming_sec:
             self._trim_buffer()
-            
+
         return result
-    
-    def _format_output(self, words):
-        """Format timestamped words into readable output."""
+
+    def _format_output(self, words, is_partial=True):
+        """
+        Format timestamped words into a result dict.
+
+        FIX: buffer_time_offset is applied here exactly once.  The words coming
+        from HypothesisBuffer are stored with raw model-relative timestamps
+        (offset NOT pre-baked), so we add it only at this final step.
+        """
         if not words:
             return None
-            
+
         start_time = words[0][0] + self.buffer_time_offset
-        end_time = words[-1][1] + self.buffer_time_offset
+        end_time   = words[-1][1] + self.buffer_time_offset
         text = " ".join(w[2] for w in words)
-        
+
         return {
             'start': start_time,
             'end': end_time,
             'text': text,
-            'is_partial': True,
-            'words': [(w[0] + self.buffer_time_offset, 
-                      w[1] + self.buffer_time_offset, 
-                      w[2]) for w in words]
+            'is_partial': is_partial,
+            'words': [
+                (w[0] + self.buffer_time_offset,
+                 w[1] + self.buffer_time_offset,
+                 w[2]) for w in words
+            ]
         }
-    
+
     def _trim_buffer(self):
-        """Trim audio buffer to prevent memory issues."""
+        """Trim audio buffer to prevent memory growth."""
         if self.commited:
-            # Trim to last committed word
             trim_time = self.commited[-1][1]
             cut_samples = int((trim_time - self.buffer_time_offset) * SAMPLE_RATE)
-            
             if cut_samples > 0:
                 self.audio_buffer = self.audio_buffer[cut_samples:]
                 self.buffer_time_offset = trim_time
-                
-                # Clean up transcript buffer
                 self.transcript_buffer.pop_commited(trim_time)
-    
+
     def finish(self):
-        """Get final transcription when streaming ends."""
-        # Process any remaining audio
-        result = None
+        """
+        Force-transcribe any remaining audio and return the final result.
+
+        FIX 1: process_iter() is called with min_chunk_size=0 to transcribe
+                whatever audio is still in the buffer before draining it.
+        FIX 2: buffer length is captured BEFORE clearing so the offset update
+                is always correct (previously the buffer was cleared first,
+                making len(audio_buffer) always 0 in the offset calculation).
+        """
+        # Force-transcribe remaining audio regardless of minimum chunk size
         if len(self.audio_buffer) > 0:
-            # Force final transcription
-            incomplete = self.transcript_buffer.complete()
-            if incomplete:
-                result = self._format_output(incomplete)
-        
-        # Clear buffers
+            saved_min = self.min_chunk_size
+            self.min_chunk_size = 0.0
+            committed_result = self.process_iter()
+            self.min_chunk_size = saved_min
+        else:
+            committed_result = None
+
+        # Anything still sitting in the unconfirmed buffer is now final too
+        incomplete = self.transcript_buffer.complete()
+        fallback_result = self._format_output(incomplete, is_partial=False) if incomplete else None
+
+        # Prefer the freshly committed result; fall back to unconfirmed words
+        result = committed_result or fallback_result
+        if result:
+            result['is_partial'] = False
+
+        # FIX: capture duration BEFORE clearing the buffer
+        remaining_duration = len(self.audio_buffer) / SAMPLE_RATE
         self.audio_buffer = np.array([], dtype=np.float32)
-        self.buffer_time_offset += len(self.audio_buffer) / SAMPLE_RATE
-        
+        self.buffer_time_offset += remaining_duration
+
         return result
 
 
 class WebSocketConnection:
-    """Manages WebSocket connection for streaming audio."""
-    
+    """Manages a WebSocket connection for streaming audio."""
+
     def __init__(self, websocket, processor):
         self.websocket = websocket
         self.processor = processor
         self.last_sent_text = ""
-        
+
     async def send_transcription(self, result):
-        """Send transcription result without duplicates."""
+        """Send a transcription result, skipping exact duplicates."""
         if not result:
             return
-            
-        # Avoid sending duplicate text
-        if result['text'] == self.last_sent_text:
-            return
-            
-        self.last_sent_text = result['text']
-        await self.websocket.send(json.dumps(result))
-        
+        # Deduplicate confirmed results; always forward partials so the
+        # frontend shows live progress even before words are committed.
+        if not result.get('is_partial', True) or result['text'] != self.last_sent_text:
+            self.last_sent_text = result['text']
+            await self.websocket.send_text(json.dumps(result))
+
     async def process_audio_stream(self):
-        """Main processing loop for streaming audio."""
+        """Main loop: receive audio chunks and stream transcriptions back."""
         try:
             while True:
-                # Receive audio chunk
                 message = await self.websocket.receive()
-                
-                if message['type'] == 'websocket.receive':
+
+                if isinstance(message, dict):
+                    msg_type = message.get('type')
+                else:
+                    msg_type = None
+
+                if msg_type == 'websocket.receive':
                     if 'bytes' in message:
-                        # Process audio chunk
                         audio_bytes = message['bytes']
-                        
-                        # Convert bytes to numpy array
-                        audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-                        
-                        # Insert and process
+                        audio_array = (
+                            np.frombuffer(audio_bytes, dtype=np.int16)
+                            .astype(np.float32) / 32768.0
+                        )
                         self.processor.insert_audio_chunk(audio_array)
-                        result = self.processor.process_iter()
+                        try:
+                            result = self.processor.process_iter()
+                        except Exception as chunk_e:
+                            print(f"Error while transcribing chunk: {chunk_e}")
+                            result = None
                         await self.send_transcription(result)
-                        
+
                     elif 'text' in message:
-                        # Handle control messages
-                        control = json.loads(message['text'])
+                        text_payload = message.get('text')
+                        try:
+                            control = json.loads(text_payload)
+                        except Exception:
+                            continue
                         if control.get('action') == 'finalize':
                             final_result = self.processor.finish()
                             await self.send_transcription(final_result)
                             break
-                            
+
+                elif msg_type == 'websocket.disconnect':
+                    break
+
+                elif isinstance(message, str):
+                    try:
+                        control = json.loads(message)
+                        if control.get('action') == 'finalize':
+                            final_result = self.processor.finish()
+                            await self.send_transcription(final_result)
+                            break
+                    except Exception:
+                        pass
+
+                else:
+                    # FIX: unknown message type → log and continue (not break).
+                    # A single malformed ping/keepalive no longer kills the stream.
+                    print(f"Ignoring unexpected WebSocket message type: {type(message)}")
+                    continue
+
         except Exception as e:
             print(f"Error in streaming: {e}")
-            await self.websocket.send(json.dumps({'error': str(e)}))
+            try:
+                await self.websocket.send_text(json.dumps({'error': str(e)}))
+            except Exception:
+                pass
 
 
-# Modal image setup
+# ---------------------------------------------------------------------------
+# Modal image & app setup
+# ---------------------------------------------------------------------------
+
 cuda_image = (
     modal.Image.from_registry("nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04", add_python="3.11")
     .apt_install("git", "ffmpeg", "libsndfile1")
@@ -322,11 +460,10 @@ cuda_image = (
         "fastapi[standard]",
         "numpy",
         "librosa",
-        "huggingface_hub[hf_transfer]==0.26.2",
         "torch",
-        "ctranslate2",
-        "faster_whisper",
-        "transformers",
+        "ctranslate2==4.7.1",
+        "faster_whisper==1.2.1",
+        "transformers==4.57.4",
         "soundfile",
         "websockets",
         "uvicorn",
@@ -344,37 +481,53 @@ volume = modal.Volume.from_name(MODAL_APP_NAME, create_if_missing=True)
     scaledown_window=SCALEDOWN,
     enable_memory_snapshot=True,
     volumes={MODEL_MOUNT_DIR: volume},
-    concurrency_limit=10,
+    max_containers=10,
+    timeout=600,  # 10 min — default 300 s kills long streaming sessions
 )
 class StreamingWhisperService:
     """Real-time streaming Whisper service with WebSocket support."""
-    
+
     model_id = MODEL_ID
-    
+
     @modal.enter()
     def enter(self):
-        """Load model and initialize."""
         print(f"Loading Whisper model: {self.model_id}")
-        
-        # Load or convert model
+
         model_dir = MODEL_MOUNT_DIR / MODEL_DOWNLOAD_DIR
         model_path = maybe_download_and_convert_model(model_dir, self.model_id)
-        
-        # Initialize FasterWhisper model
-        self.whisper_model = WhisperModel(
-            model_path, 
-            device="cuda", 
-            compute_type="float16",
-            cpu_threads=4,
-            num_workers=1
-        )
-        print("Model loaded successfully")
-        
-        # Initialize processor
+
+        try:
+            self.whisper_model = WhisperModel(
+                model_path,
+                device="cuda",
+                compute_type="float16",
+                cpu_threads=4,
+                num_workers=1,
+            )
+            print("Model loaded successfully via ctranslate2-converted path")
+
+        except Exception as e:
+            print("Failed to load converted model, falling back to direct HF path:", e)
+            self.whisper_model = WhisperModel(
+                self.model_id,
+                device="cuda",
+                compute_type="float16",
+                cpu_threads=4,
+                num_workers=1,
+            )
+            print("Model loaded successfully via direct HuggingFace path")
+
+        # The memory snapshot may have captured the model with an 80-mel feature
+        # extractor. Reinitialise here — enter() runs on every restore — so the
+        # extractor is always correct regardless of snapshot state.
+        fe = self.whisper_model.feature_extractor
+        self.whisper_model.feature_extractor = type(fe)(feature_size=128)
+        print(f"Feature extractor set to feature_size=128 (was: {getattr(fe, 'feature_size', '?')})")
+
         self.processor = None
-        
+
     def get_processor(self):
-        """Get or create streaming processor for this connection."""
+        """Get or create a streaming processor (used for single-connection reuse)."""
         if self.processor is None:
             self.processor = StreamingASRProcessor(
                 self.whisper_model,
@@ -382,19 +535,18 @@ class StreamingWhisperService:
                 buffer_trimming_sec=BUFFER_TRIMMING_SEC
             )
         return self.processor
-    
+
     @modal.fastapi_endpoint(docs=True, method="POST")
-    def transcribe_file(self, 
-                       wav: bytes = modal.File(..., description="WAV audio file (16kHz mono)"),
-                       language: str = modal.Form(default=None, description="Optional language code"),
-                       word_timestamps: bool = modal.Form(default=False, description="Include word-level timestamps")):
-        """Simple file-based transcription endpoint (non-streaming)."""
+    async def transcribe_file(self,
+                              wav: UploadFile = File(..., description="WAV audio file (16kHz mono)"),
+                              language: Optional[str] = Query(None, description="Optional language code"),
+                              word_timestamps: bool = Query(False, description="Include word-level timestamps")):
+        """Non-streaming file transcription endpoint."""
         import librosa
-        
-        # Load audio
-        audio_array, _ = librosa.load(io.BytesIO(wav), sr=SAMPLE_RATE)
-        
-        # Process entire file
+
+        wav_bytes = await wav.read()
+        audio_array, _ = librosa.load(io.BytesIO(wav_bytes), sr=SAMPLE_RATE)
+
         segments, _ = self.whisper_model.transcribe(
             audio_array,
             beam_size=BEAM_SIZE,
@@ -403,12 +555,11 @@ class StreamingWhisperService:
             vad_filter=True,
             word_timestamps=word_timestamps,
         )
-        
-        # Format results
+
         transcription = ""
         all_segments = []
         all_words = []
-        
+
         for segment in segments:
             transcription += segment.text + " "
             all_segments.append({
@@ -417,7 +568,6 @@ class StreamingWhisperService:
                 'text': segment.text,
                 'confidence': float(np.exp(segment.avg_logprob))
             })
-            
             if segment.words:
                 for word in segment.words:
                     all_words.append({
@@ -426,7 +576,7 @@ class StreamingWhisperService:
                         'word': word.word,
                         'probability': word.probability if hasattr(word, 'probability') else None
                     })
-        
+
         return {
             'result': 'success',
             'transcription': transcription.strip(),
@@ -434,256 +584,86 @@ class StreamingWhisperService:
             'words': all_words if word_timestamps else None,
             'language_detected': None
         }
-    
+
     @modal.asgi_app()
     def streaming_endpoint(self):
         """WebSocket endpoint for real-time streaming with CORS support."""
         from fastapi import FastAPI, WebSocket, WebSocketDisconnect
         from fastapi.responses import HTMLResponse
         from fastapi.middleware.cors import CORSMiddleware
-        
+
         web_app = FastAPI(title="30sAI Whisper Streaming Service", version="1.0.0")
-        
-        # Configure CORS for Netlify and local development
-        # IMPORTANT: Replace with your actual Netlify URL before deploying!
+
         web_app.add_middleware(
             CORSMiddleware,
             allow_origins=[
-                "https://30sai.netlify.app",  
+                "https://30sai.netlify.app",
                 "http://localhost:8000",
                 "http://localhost:3000",
                 "http://127.0.0.1:8000",
                 "http://127.0.0.1:3000",
-                # For testing with any origin (remove in production):
-                # "*",
             ],
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
             expose_headers=["*"],
         )
-        
-        @web_app.get("/")
-        async def get_index():
-            return HTMLResponse("""
-            <!DOCTYPE html>
-            <html>
-                <head>
-                    <title>30sAI Whisper Streaming Service</title>
-                    <style>
-                        body {
-                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                            max-width: 800px;
-                            margin: 0 auto;
-                            padding: 20px;
-                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                            min-height: 100vh;
-                        }
-                        .container {
-                            background: white;
-                            border-radius: 20px;
-                            padding: 30px;
-                            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                        }
-                        h1 {
-                            color: #333;
-                            margin-bottom: 10px;
-                        }
-                        .status {
-                            padding: 10px;
-                            border-radius: 8px;
-                            margin: 20px 0;
-                            font-family: monospace;
-                        }
-                        .online {
-                            background: #d4edda;
-                            color: #155724;
-                        }
-                        code {
-                            background: #f4f4f4;
-                            padding: 2px 6px;
-                            border-radius: 4px;
-                            font-family: monospace;
-                        }
-                        pre {
-                            background: #f4f4f4;
-                            padding: 15px;
-                            border-radius: 8px;
-                            overflow-x: auto;
-                            font-size: 12px;
-                        }
-                        .endpoint {
-                            background: #e7f3ff;
-                            padding: 15px;
-                            border-radius: 8px;
-                            margin: 20px 0;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <h1>🎙️ 30sAI Whisper Streaming Service</h1>
-                        <p>Real-time speech-to-text streaming with fine-tuned Whisper model</p>
-                        
-                        <div class="status online">
-                            ✅ Service is online and ready
-                        </div>
-                        
-                        <div class="endpoint">
-                            <strong>🔌 WebSocket Endpoint:</strong><br>
-                            <code>wss://[your-app].modal.run/ws</code>
-                        </div>
-                        
-                        <h2>📝 Quick Test with Python:</h2>
-                        <pre>
-import asyncio
-import websockets
-import numpy as np
-import soundfile as sf
 
-async def test_streaming():
-    uri = "wss://your-app.modal.run/ws"
-    async with websockets.connect(uri) as ws:
-        # Load and stream audio
-        audio, sr = sf.read('test.wav')
-        if sr != 16000:
-            from scipy import signal
-            audio = signal.resample(audio, int(len(audio) * 16000 / sr))
-        
-        chunk_size = 16000
-        for i in range(0, len(audio), chunk_size):
-            chunk = audio[i:i+chunk_size]
-            bytes_data = (chunk * 32767).astype(np.int16).tobytes()
-            await ws.send(bytes_data)
-            response = await ws.recv()
-            print(response)
-        
-        await ws.send('{"action": "finalize"}')
-        final = await ws.recv()
-        print(f"Final: {final}")
-
-asyncio.run(test_streaming())
-                        </pre>
-                        
-                        <h2>🌐 Browser Client:</h2>
-                        <p>Download the complete HTML client from your Netlify deployment or use the WebSocket endpoint directly.</p>
-                        
-                        <h2>📊 Endpoints:</h2>
-                        <ul>
-                            <li><code>GET /</code> - This status page</li>
-                            <li><code>WS /ws</code> - WebSocket endpoint for streaming</li>
-                            <li><code>POST /transcribe-file</code> - File upload endpoint</li>
-                            <li><code>GET /health</code> - Health check</li>
-                        </ul>
-                        
-                        <hr>
-                        <p style="color: #666; font-size: 12px;">Powered by Modal Labs & Faster-Whisper</p>
-                    </div>
-                </body>
-            </html>
-            """)
-        
         @web_app.get("/health")
         async def health_check():
-            """Health check endpoint."""
             return {
                 "status": "healthy",
                 "model": self.model_id,
                 "sample_rate": SAMPLE_RATE,
                 "beam_size": BEAM_SIZE
             }
-        
+
         @web_app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             """WebSocket endpoint for real-time audio streaming."""
             await websocket.accept()
             print("WebSocket connection accepted")
-            
-            # Create new processor for this connection
+
+            # Each connection gets its own fresh processor — never shared state.
             processor = StreamingASRProcessor(
                 self.whisper_model,
                 min_chunk_size=MIN_CHUNK_SIZE,
                 buffer_trimming_sec=BUFFER_TRIMMING_SEC
             )
             connection = WebSocketConnection(websocket, processor)
-            
+
             try:
                 await connection.process_audio_stream()
             except WebSocketDisconnect:
                 print("WebSocket disconnected")
             except Exception as e:
-                print(f"Error in WebSocket: {e}")
+                print(f"Error in WebSocket handler: {e}")
                 try:
-                    await websocket.send(json.dumps({'error': str(e)}))
-                except:
+                    await websocket.send_text(json.dumps({'error': str(e)}))
+                except Exception:
                     pass
             finally:
-                # Send final transcription if any
                 final = processor.finish()
                 if final:
                     try:
-                        await websocket.send(json.dumps(final))
-                    except:
+                        await websocket.send_text(json.dumps(final))
+                    except Exception:
                         pass
                 try:
                     await websocket.close()
-                except:
+                except Exception:
                     pass
-                
+
         return web_app
 
 
-# Optional: Client example script
 @app.local_entrypoint()
 def test_streaming():
-    """Test the streaming service with a sample file."""
-    import requests
-    import numpy as np
-    import librosa
-    import websockets
-    import asyncio
-    import sys
-    
     print("=" * 60)
     print("Testing Streaming Whisper Service")
     print("=" * 60)
-    
-    # Test file upload endpoint
     url = "https://" + app.app_id + "--streaming-whisper-service-transcribe-file.modal.run"
-    print(f"\n1. Testing file upload endpoint at: {url}")
-    
-    # You would need to have a test audio file
-    # For now, we'll just print instructions
-    print("\nTo test file upload:")
+    print(f"\nFile upload endpoint: {url}")
     print(f'curl -X POST "{url}" -F "wav=@your_audio.wav"')
-    
-    print("\nTo test WebSocket streaming:")
-    print("ws_url = wss://" + app.app_id + "--streaming-whisper-service-streaming-endpoint.modal.run/ws")
-    print("\nUse a WebSocket client to connect and send audio chunks")
-    print("\nExample Python WebSocket client:")
-    print("""
-import asyncio
-import websockets
-import numpy as np
-import soundfile as sf
-
-async def stream_audio():
-    uri = "wss://your-endpoint/ws"
-    async with websockets.connect(uri) as websocket:
-        # Load and stream audio in chunks
-        audio, sr = sf.read('test.wav')
-        chunk_size = 16000  # 1 second chunks
-        for i in range(0, len(audio), chunk_size):
-            chunk = audio[i:i+chunk_size]
-            # Convert to int16 bytes
-            bytes_data = (chunk * 32768).astype(np.int16).tobytes()
-            await websocket.send(bytes_data)
-            response = await websocket.recv()
-            print(response)
-        # Signal end of stream
-        await websocket.send('{"action": "finalize"}')
-        final = await websocket.recv()
-        print(f"Final: {final}")
-
-asyncio.run(stream_audio())
-    """)
+    print("\nWebSocket endpoint:")
+    print("wss://" + app.app_id + "--streaming-whisper-service-streaming-endpoint.modal.run/ws")

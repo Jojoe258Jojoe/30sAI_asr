@@ -13,7 +13,7 @@ app = modal.App("tts-service")
 # Image with dependencies
 tts_image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("gTTS==2.5.3")
+    .pip_install("gTTS==2.5.3", "fastapi[standard]")
 )
 
 
@@ -54,3 +54,8 @@ class TTSService:
             "audio_b64": audio_b64,
             "duration_ms": duration_ms
         }
+
+    @modal.fastapi_endpoint(method="POST")
+    def speak_web(self, text: str) -> dict:
+        """HTTP endpoint for text-to-speech (called from frontend)"""
+        return self.speak.local(text)

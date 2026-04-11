@@ -19,7 +19,7 @@ FEEDBACK_PATH = "/mnt/aac-models/feedback"
 
 feedback_image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("numpy==1.24.3")
+    .pip_install("numpy==1.24.3", "fastapi[standard]")
 )
 
 
@@ -92,3 +92,13 @@ class FeedbackService:
         
         json_files = [x for x in os.listdir(FEEDBACK_PATH) if x.endswith(".json")]
         return {"total_pairs": len(json_files)}
+
+    @modal.fastapi_endpoint(method="POST")
+    def save_correction_web(self, audio_b64: str, original: str, corrected: str) -> dict:
+        """HTTP endpoint for saving corrections (called from frontend)"""
+        return self.save_correction.local(audio_b64, original, corrected)
+
+    @modal.fastapi_endpoint(method="GET")
+    def get_stats_web(self) -> dict:
+        """HTTP endpoint for feedback statistics"""
+        return self.get_stats.local()
