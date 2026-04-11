@@ -16,9 +16,17 @@ import time
 import logging
 from typing import Optional, Dict, Any
 import io
-import soundfile as sf
-from faster_whisper import WhisperModel
-from fastapi import UploadFile, File, Query
+
+try:
+    from fastapi import UploadFile, File, Query
+except ModuleNotFoundError:
+    UploadFile = Any
+
+    def File(*args, **kwargs):
+        return None
+
+    def Query(*args, **kwargs):
+        return None
 
 MODAL_APP_NAME = "streaming_whisper"
 
@@ -71,7 +79,7 @@ def _patch_mel_bins(model_path, n_mels=128):
 
 def maybe_download_and_convert_model(model_storage_dir, model_id):
     """Download and convert model to CTranslate2 format if not available locally."""
-    import ctranslate2
+    import ctranslate2  # type: ignore[import-not-found]
 
     print(f"Checking for cached model in storage directory: {model_storage_dir}, model ID: {model_id}")
 
@@ -79,6 +87,8 @@ def maybe_download_and_convert_model(model_storage_dir, model_id):
     model_path = model_storage_dir / subdir
     model_bin_path = model_path / "model.bin"
     print(f"Looking for model at: {model_path}")
+
+    converted = False
 
     if not model_path.exists() or not model_bin_path.exists():
         print(f"Model not found in cache or incomplete -- downloading from HuggingFace: {model_id}")
@@ -90,13 +100,14 @@ def maybe_download_and_convert_model(model_storage_dir, model_id):
         print(f"Converting to CTranslate2 format (float16)...")
         converter.convert(str(model_path), quantization="float16", force=True)
         print(f"Model successfully converted and saved to {model_path}")
+        converted = True
     else:
         print(f"Found cached model at {model_path}")
 
     # Always patch mel bin counts — even on a cached model the config may be wrong.
     _patch_mel_bins(model_path, n_mels=128)
 
-    return str(model_path)
+    return str(model_path), converted
 
 
 class HypothesisBuffer:
@@ -493,8 +504,25 @@ class StreamingWhisperService:
     def enter(self):
         print(f"Loading Whisper model: {self.model_id}")
 
+        from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+
+        # Sync the mounted volume view so this container can see model artifacts
+        # produced by previously started containers.
+        try:
+            volume.reload()
+        except Exception as e:
+            print(f"Volume reload skipped: {e}")
+
         model_dir = MODEL_MOUNT_DIR / MODEL_DOWNLOAD_DIR
-        model_path = maybe_download_and_convert_model(model_dir, self.model_id)
+        model_path, converted = maybe_download_and_convert_model(model_dir, self.model_id)
+
+        # Persist newly converted model files so future cold starts reuse cache.
+        if converted:
+            try:
+                volume.commit()
+                print("Committed converted model artifacts to Modal volume")
+            except Exception as e:
+                print(f"Volume commit skipped: {e}")
 
         try:
             self.whisper_model = WhisperModel(
@@ -538,7 +566,7 @@ class StreamingWhisperService:
 
     @modal.fastapi_endpoint(docs=True, method="POST")
     async def transcribe_file(self,
-                              wav: UploadFile = File(..., description="WAV audio file (16kHz mono)"),
+                              wav: Any = File(..., description="WAV audio file (16kHz mono)"),
                               language: Optional[str] = Query(None, description="Optional language code"),
                               word_timestamps: bool = Query(False, description="Include word-level timestamps")):
         """Non-streaming file transcription endpoint."""

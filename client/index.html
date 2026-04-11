@@ -869,6 +869,13 @@ const state = {
   scriptProc: null,
   isSpeaking: false,
   predictionTimer: null,
+  debug: {
+    micFrames: 0,
+    chunksSent: 0,
+    partialCount: 0,
+    finalCount: 0,
+    startedAt: 0,
+  },
 };
 
 const cfg = {
@@ -879,7 +886,38 @@ const cfg = {
   browserTts:   localStorage.getItem('cfg-browser-tts')   !== 'false',
   autoPredict:  localStorage.getItem('cfg-auto-predict')  !== 'false',
   sendFeedback: localStorage.getItem('cfg-send-feedback') !== 'false',
+  debugLogs:    localStorage.getItem('cfg-debug-logs')    !== 'false',
 };
+
+/* ══════════════════════════════════════════════════════════════════
+   DEBUG LOGGER
+══════════════════════════════════════════════════════════════════ */
+function dbg(step, data = {}, level = 'info') {
+  if (!cfg.debugLogs) return;
+  const payload = { ts: new Date().toISOString(), step, ...data };
+  if (level === 'error') console.error('[VoiceLink]', payload);
+  else if (level === 'warn') console.warn('[VoiceLink]', payload);
+  else console.log('[VoiceLink]', payload);
+}
+
+function resetDebugCounters() {
+  state.debug.micFrames = 0;
+  state.debug.chunksSent = 0;
+  state.debug.partialCount = 0;
+  state.debug.finalCount = 0;
+  state.debug.startedAt = Date.now();
+}
+
+dbg('app.init', {
+  hasWhisperWs: Boolean(cfg.whisperWs),
+  hasGpt2Url: Boolean(cfg.gpt2Url),
+  hasTtsUrl: Boolean(cfg.ttsUrl),
+  hasFeedbackUrl: Boolean(cfg.feedbackUrl),
+  browserTts: cfg.browserTts,
+  autoPredict: cfg.autoPredict,
+  sendFeedback: cfg.sendFeedback,
+  debugLogs: cfg.debugLogs,
+});
 
 /* ══════════════════════════════════════════════════════════════════
    CLOCK
@@ -923,7 +961,8 @@ function setToggle(id, val) {
   if (val) el.classList.add('on'); else el.classList.remove('on');
 }
 function saveSettings() {
-  cfg.whisperWs   = document.getElementById('cfg-whisper-ws').value.trim();
+  const rawWhisper = document.getElementById('cfg-whisper-ws').value.trim();
+  cfg.whisperWs   = normalizeWhisperWsUrl(rawWhisper);
   cfg.gpt2Url     = document.getElementById('cfg-gpt2-url').value.trim();
   cfg.ttsUrl      = document.getElementById('cfg-tts-url').value.trim();
   cfg.feedbackUrl = document.getElementById('cfg-feedback-url').value.trim();
@@ -937,8 +976,50 @@ function saveSettings() {
   localStorage.setItem('cfg-browser-tts',  cfg.browserTts);
   localStorage.setItem('cfg-auto-predict', cfg.autoPredict);
   localStorage.setItem('cfg-send-feedback',cfg.sendFeedback);
+  localStorage.setItem('cfg-debug-logs',   cfg.debugLogs);
+  dbg('settings.saved', {
+    whisperWs: cfg.whisperWs,
+    gpt2Url: cfg.gpt2Url,
+    ttsUrl: cfg.ttsUrl,
+    feedbackUrl: cfg.feedbackUrl,
+    browserTts: cfg.browserTts,
+    autoPredict: cfg.autoPredict,
+    sendFeedback: cfg.sendFeedback,
+    debugLogs: cfg.debugLogs,
+  });
   showToast('Settings saved ✓');
   setTimeout(() => goTo('dialer'), 600);
+}
+
+function normalizeWhisperWsUrl(input) {
+  if (!input) return '';
+
+  try {
+    // Allow users to paste either full ws URL or HTTPS Modal endpoint.
+    if (input.startsWith('ws://') || input.startsWith('wss://')) {
+      const u = new URL(input);
+      if (!u.pathname || u.pathname === '/') u.pathname = '/ws';
+      return u.toString();
+    }
+
+    if (input.startsWith('http://') || input.startsWith('https://')) {
+      const u = new URL(input);
+      u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+      if (!u.pathname || u.pathname === '/' || u.pathname.includes('transcribe')) {
+        u.pathname = '/ws';
+      }
+      return u.toString();
+    }
+
+    // Bare host fallback: example.com -> wss://example.com/ws
+    const guess = new URL('https://' + input.replace(/^\/+/, ''));
+    guess.protocol = 'wss:';
+    guess.pathname = '/ws';
+    return guess.toString();
+  } catch (e) {
+    dbg('whisper.url.invalid', { input, error: String(e) }, 'warn');
+    return input;
+  }
 }
 loadSettingsUI();
 
@@ -1003,6 +1084,8 @@ function startCall() {
   clearCompose();
 
   goTo('call');
+  resetDebugCounters();
+  dbg('call.started', { number: num, name, initials: init });
 
   // Timer
   state.callSeconds = 0;
@@ -1021,6 +1104,14 @@ function startCall() {
 }
 
 function endCall() {
+  const durationSec = state.debug.startedAt ? Math.round((Date.now() - state.debug.startedAt) / 1000) : 0;
+  dbg('call.ended', {
+    durationSec,
+    micFrames: state.debug.micFrames,
+    chunksSent: state.debug.chunksSent,
+    partialCount: state.debug.partialCount,
+    finalCount: state.debug.finalCount,
+  });
   state.callActive = false;
   clearInterval(state.callTimer);
   state.callTimer = null;
@@ -1071,35 +1162,48 @@ const CHUNK_MS  = 250; // send every 250ms
 
 function connectWhisper() {
   if (!cfg.whisperWs) {
+    dbg('whisper.connect.skipped', { reason: 'missing_url' }, 'warn');
     setDot('whisper', 'error');
     showToast('⚠ No Whisper URL configured');
     startMic(true); // mic only, no WS
     return;
   }
+
+  cfg.whisperWs = normalizeWhisperWsUrl(cfg.whisperWs);
   setDot('whisper', 'connecting');
+  dbg('whisper.connect.attempt', { url: cfg.whisperWs });
   try {
     state.ws = new WebSocket(cfg.whisperWs);
     state.ws.binaryType = 'arraybuffer';
 
     state.ws.onopen = () => {
+      dbg('whisper.connect.open');
       setDot('whisper', 'ok');
       startMic(false);
     };
     state.ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.error) { console.warn('Whisper error:', msg.error); return; }
+        if (msg.error) {
+          dbg('whisper.message.error', { error: msg.error }, 'warn');
+          return;
+        }
         handleTranscript(msg);
-      } catch(e) { console.warn('WS parse error', e); }
+      } catch(e) {
+        dbg('whisper.message.parse_failed', { error: String(e) }, 'warn');
+      }
     };
-    state.ws.onerror = () => {
+    state.ws.onerror = (e) => {
+      dbg('whisper.connect.error', { error: String(e) }, 'error');
       setDot('whisper', 'error');
       showToast('⚠ Whisper connection error');
     };
-    state.ws.onclose = () => {
+    state.ws.onclose = (e) => {
+      dbg('whisper.connect.closed', { code: e.code, reason: e.reason || '' }, e.code === 1000 ? 'info' : 'warn');
       if (state.callActive) setDot('whisper', 'error');
     };
   } catch(e) {
+    dbg('whisper.connect.failed', { error: String(e) }, 'error');
     setDot('whisper', 'error');
   }
 }
@@ -1107,14 +1211,18 @@ function connectWhisper() {
 function disconnectWhisper() {
   if (state.ws) {
     try {
+      dbg('whisper.disconnect.finalize_send');
       state.ws.send(JSON.stringify({ action: 'finalize' }));
       state.ws.close();
-    } catch(e) {}
+    } catch(e) {
+      dbg('whisper.disconnect.error', { error: String(e) }, 'warn');
+    }
     state.ws = null;
   }
 }
 
 async function startMic(localOnly) {
+  dbg('mic.start.requested', { localOnly });
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
@@ -1124,6 +1232,11 @@ async function startMic(localOnly) {
     state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const src = state.audioCtx.createMediaStreamSource(stream);
     const nativeSR = state.audioCtx.sampleRate;
+    dbg('mic.start.success', {
+      nativeSampleRate: nativeSR,
+      targetSampleRate: TARGET_SR,
+      tracks: stream.getAudioTracks().length,
+    });
 
     // ScriptProcessor for raw PCM access
     const bufSize = Math.floor(nativeSR * CHUNK_MS / 1000);
@@ -1134,6 +1247,7 @@ async function startMic(localOnly) {
     proc.onaudioprocess = (ev) => {
       if (!state.callActive || state.muted) return;
       const input = ev.inputBuffer.getChannelData(0);
+      state.debug.micFrames += 1;
 
       // Accumulate for visualizer (rough energy)
       let energy = 0;
@@ -1159,6 +1273,15 @@ async function startMic(localOnly) {
         accum = accum.slice(bufSize);
         const int16 = floatToInt16(toSend);
         state.ws.send(int16.buffer);
+        state.debug.chunksSent += 1;
+        if (state.debug.chunksSent === 1 || state.debug.chunksSent % 20 === 0) {
+          dbg('whisper.audio_chunk.sent', {
+            chunksSent: state.debug.chunksSent,
+            samples: int16.length,
+            approxDurationMs: Math.round((int16.length / TARGET_SR) * 1000),
+            bufferedFeedbackSamples: state.audioBuffer.length,
+          });
+        }
       }
     };
 
@@ -1168,14 +1291,21 @@ async function startMic(localOnly) {
 
     setWaveform(true);
     if (!localOnly) setDot('whisper', 'ok');
+    if (localOnly) dbg('mic.start.local_only_mode', { reason: 'whisper_url_missing' }, 'warn');
 
   } catch(e) {
+    dbg('mic.start.failed', { error: String(e) }, 'error');
     showToast('⚠ Microphone access denied');
     setDot('whisper', 'error');
   }
 }
 
 function stopMic() {
+  dbg('mic.stop', {
+    hadProcessor: Boolean(state.scriptProc),
+    hadAudioContext: Boolean(state.audioCtx),
+    hadStream: Boolean(state.micStream),
+  });
   if (state.scriptProc) { state.scriptProc.disconnect(); state.scriptProc = null; }
   if (state.audioCtx)   { state.audioCtx.close(); state.audioCtx = null; }
   if (state.micStream)  { state.micStream.getTracks().forEach(t => t.stop()); state.micStream = null; }
@@ -1216,10 +1346,23 @@ function handleTranscript(msg) {
   if (!text) return;
 
   if (msg.is_partial) {
+    state.debug.partialCount += 1;
+    if (state.debug.partialCount === 1 || state.debug.partialCount % 10 === 0) {
+      dbg('whisper.transcript.partial', {
+        partialCount: state.debug.partialCount,
+        textPreview: text.slice(0, 80),
+      });
+    }
     // Update or create partial segment
     state.partialText = text;
     renderTranscript();
   } else {
+    state.debug.finalCount += 1;
+    dbg('whisper.transcript.final', {
+      finalCount: state.debug.finalCount,
+      textPreview: text.slice(0, 120),
+      wordsCount: (msg.words || []).length,
+    });
     // Commit segment
     state.partialText = '';
     const words = (msg.words || []).map(w => typeof w === 'object' ? w[2] || w.word || '' : w);
@@ -1348,6 +1491,12 @@ async function submitCorrection(segId) {
   // Send to feedback service
   if (cfg.sendFeedback && cfg.feedbackUrl) {
     setDot('feedback', 'connecting');
+    dbg('feedback.submit.start', {
+      segId,
+      originalPreview: correctionState.original.slice(0, 80),
+      corrected,
+      endpoint: cfg.feedbackUrl,
+    });
     try {
       const audioB64 = getRecentAudioB64();
       const res = await fetch(cfg.feedbackUrl, {
@@ -1360,9 +1509,15 @@ async function submitCorrection(segId) {
         })
       });
       const data = await res.json();
+      dbg('feedback.submit.response', {
+        ok: res.ok,
+        status: res.status,
+        message: data.message || '',
+      }, res.ok ? 'info' : 'warn');
       setDot('feedback', 'ok');
       if (data.message) showToast('📊 ' + data.message);
     } catch(e) {
+      dbg('feedback.submit.failed', { error: String(e) }, 'error');
       setDot('feedback', 'error');
       console.warn('Feedback error:', e);
     }
@@ -1393,6 +1548,11 @@ function schedulePredictions(text) {
 async function fetchPredictions(text) {
   setDot('gpt2', 'connecting');
   showSkeletonPredictions();
+  dbg('gpt2.request.start', {
+    endpoint: cfg.gpt2Url,
+    textPreview: (text || '').slice(0, 80),
+    n: 4,
+  });
 
   if (!cfg.gpt2Url) {
     setDot('gpt2', 'error');
@@ -1408,9 +1568,15 @@ async function fetchPredictions(text) {
     });
     const data = await res.json();
     const preds = Array.isArray(data) ? data : (data.predictions || data.result || []);
+    dbg('gpt2.request.response', {
+      ok: res.ok,
+      status: res.status,
+      predictionsCount: preds.length,
+    }, res.ok ? 'info' : 'warn');
     setDot('gpt2', 'ok');
     renderPredictions(preds.slice(0, 4));
   } catch(e) {
+    dbg('gpt2.request.failed', { error: String(e) }, 'error');
     setDot('gpt2', 'error');
     showFallbackPredictions(text);
   }
@@ -1510,6 +1676,11 @@ async function speakCompose() {
 
 async function speakViaModal(text) {
   setDot('tts', 'connecting');
+  dbg('tts.request.start', {
+    endpoint: cfg.ttsUrl,
+    textLength: text.length,
+    textPreview: text.slice(0, 80),
+  });
   try {
     const res = await fetch(cfg.ttsUrl, {
       method: 'POST',
@@ -1517,6 +1688,12 @@ async function speakViaModal(text) {
       body: JSON.stringify({ text })
     });
     const data = await res.json();
+    dbg('tts.request.response', {
+      ok: res.ok,
+      status: res.status,
+      hasAudio: Boolean(data.audio_b64),
+      durationMs: data.duration_ms || null,
+    }, res.ok ? 'info' : 'warn');
     setDot('tts', 'ok');
 
     if (data.audio_b64) {
@@ -1533,6 +1710,7 @@ async function speakViaModal(text) {
       });
     }
   } catch(e) {
+    dbg('tts.request.failed', { error: String(e) }, 'error');
     setDot('tts', 'error');
     throw e;
   }
