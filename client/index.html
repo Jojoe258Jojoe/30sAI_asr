@@ -1585,12 +1585,12 @@ async function fetchPredictions(text) {
 
   try {
     const u = new URL(cfg.gpt2Url);
+    // Ensure we hit /predict, not the bare root
+    u.pathname = u.pathname.replace(/\/?$/, '/predict');
     u.searchParams.set('text', text);
     u.searchParams.set('n', '4');
 
-    const res = await fetch(u.toString(), {
-      method: 'POST'
-    });
+    const res = await fetch(u.toString());   // GET /predict?text=...&n=4
     const data = await res.json();
     const preds = Array.isArray(data) ? data : (data.predictions || data.result || []);
     dbg('gpt2.request.response', {
@@ -1827,9 +1827,9 @@ async function checkServiceEndpoints(showToastMsg = true) {
     setDot('gpt2', 'connecting');
     try {
       const u = new URL(cfg.gpt2Url);
-      u.searchParams.set('text', 'hello there');
-      u.searchParams.set('n', '2');
-      const res = await fetch(u.toString(), { method: 'POST' });
+      // Probe /health, not the bare base URL
+      u.pathname = u.pathname.replace(/\/?$/, '/health');
+      const res = await fetch(u.toString());   // GET /health
       const ok = res.ok;
       results.gpt2.ok = ok;
       results.gpt2.note = `HTTP ${res.status}`;
