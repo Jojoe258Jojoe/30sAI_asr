@@ -1,6 +1,6 @@
 # 30sAI_asr
 
-30s AI is an application that transforms unstructured speech into structured text in real time and sends the transcription to a customer service or support agent over WebSocket. It was developed by Tinyefuza Joe, Nabaccwa.M.Jema and Adam Katongole for the ASR hackathon Uganda 2026.
+30s AI is an application that transforms unstructured speech into structured text in real time and sends the transcription to a customer service or support agent over WebSocket. It was developed by Tinyefuza Joe, and Nabaccwa.M.Jema for the ASR hackathon Uganda 2026.
 
 ## What is in the repo
 
